@@ -226,9 +226,12 @@ class CubeEngine:
         self.excluded_dims = profiler_result.get("excluded_dims", [])
         print(f"[BUILD] Build: {len(self.dims)} dims, {len(self.measures)} measures, time_col={self.time_col}", file=sys.stderr, flush=True)
         
+        print(f"[BUILD] Deleting old cube data", file=sys.stderr, flush=True)
         self.conn.execute(f"DELETE FROM {CUBE_TABLE}")
+        print(f"[BUILD] Registering source table", file=sys.stderr, flush=True)
         self.conn.register("_src", df)
         if self.time_col:
+            print(f"[BUILD] Parsing time column '{self.time_col}'", file=sys.stderr, flush=True)
             self.conn.execute(f"""
                 CREATE OR REPLACE TABLE _src_parsed AS
                 SELECT *, TRY_CAST("{self.time_col}" AS DATE) AS _date_parsed FROM _src
@@ -238,17 +241,24 @@ class CubeEngine:
 
         cube_dims = [d for d in self.dims if d["cardinality"] <= CARDINALITY_CUTOFF]
         dim_names = [d["col"] for d in cube_dims]
+        print(f"[BUILD] Cube dims: {dim_names}", file=sys.stderr, flush=True)
         rows_inserted = 0
 
         for grain in TIME_GRAINS:
+            print(f"[BUILD] Starting grain={grain}", file=sys.stderr, flush=True)
             t_grain = time.time()
             period_expr = _grain_expr("_date_parsed", grain) if self.time_col else "'__all__'"
+            print(f"[BUILD]   grain={grain} total aggregation", file=sys.stderr, flush=True)
             rows_inserted += self._agg_and_insert(grain, period_expr, [], "__total__")
+            print(f"[BUILD]   grain={grain} total done, rows={rows_inserted}", file=sys.stderr, flush=True)
             for dcol in dim_names:
+                print(f"[BUILD]   grain={grain} dim={dcol}", file=sys.stderr, flush=True)
                 rows_inserted += self._agg_and_insert(grain, period_expr, [dcol], dcol)
+            print(f"[BUILD]   grain={grain} all 1d dims done", file=sys.stderr, flush=True)
             for r in range(2, MAX_DIM_CROSS + 1):
                 for combo in combinations(dim_names, r):
                     combo_key = "|".join(sorted(combo))
+                    print(f"[BUILD]   grain={grain} cross={combo_key}", file=sys.stderr, flush=True)
                     rows_inserted += self._agg_and_insert(grain, period_expr, list(combo), combo_key)
             print(f"[BUILD] grain={grain} completed in {time.time()-t_grain:.2f}s, total_rows={rows_inserted}", file=sys.stderr, flush=True)
 
@@ -277,6 +287,7 @@ class CubeEngine:
         }
 
     def _agg_and_insert(self, grain, period_expr, group_cols, dim_combo):
+        import sys
         measure_aggs = ", ".join([
             f'SUM("{m["col"]}") AS "{m["col"]}_sum", '
             f'COUNT("{m["col"]}") AS "{m["col"]}_cnt", '
@@ -304,12 +315,17 @@ class CubeEngine:
             FROM _src_parsed WHERE {period_expr} IS NOT NULL {group_by}
         """
         try:
+            print(f"[BUILD]     Executing SQL for {dim_combo}...", file=sys.stderr, flush=True)
             result_df = self.conn.execute(sql).df()
-        except Exception:
+            print(f"[BUILD]     SQL returned {len(result_df)} rows", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[BUILD]     SQL error for {dim_combo}: {str(e)}", file=sys.stderr, flush=True)
             return 0
         if result_df.empty:
+            print(f"[BUILD]     Empty result for {dim_combo}", file=sys.stderr, flush=True)
             return 0
         rows = 0
+        print(f"[BUILD]     Inserting {len(result_df)} rows x {len(self.measures)} measures", file=sys.stderr, flush=True)
         for _, row in result_df.iterrows():
             period_key = str(row["period_key"])
             dim_json = str(row["dim_json"])
@@ -331,6 +347,7 @@ class CubeEngine:
                     rows += 1
                 except Exception:
                     pass
+        print(f"[BUILD]     Insert complete for {dim_combo}: {rows} cube cells created", file=sys.stderr, flush=True)
         return rows
 
     def _compute_deltas(self):

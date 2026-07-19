@@ -31,6 +31,7 @@ import pandas as pd
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import httpx
 
@@ -1106,6 +1107,13 @@ async def get_conversation(session_id: str, limit: int = 20):
         {"role": r[0], "content": r[1], "intent": json.loads(r[2]) if r[2] else None, "timestamp": r[3]}
         for r in reversed(rows)
     ]}
+
+# ── Frontend Static Serving (single-service deployment) ─────────────────────
+
+_FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "public"))
+if os.path.exists(os.path.join(_FRONTEND_DIR, "index.html")):
+    # Mount at the end so API routes above keep priority.
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 

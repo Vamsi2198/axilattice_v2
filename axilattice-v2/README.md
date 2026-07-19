@@ -66,18 +66,20 @@
 
 ---
 
-## Deploy Backend (Render)
+## Deploy on Render (Single Service)
 
-1. Push `backend/` to GitHub
+1. Push the full repository to GitHub
 2. Create new **Web Service** on [render.com](https://render.com)
-3. Connect repo → Render auto-detects `render.yaml`
+3. Connect repo → Render auto-detects root `render.yaml`
 4. Add env var: `ANTHROPIC_API_KEY = sk-ant-...`
-5. Deploy → note URL: `https://axilattice-backend-v2.onrender.com`
+5. Deploy → use one URL for both UI and API
 
-The `render.yaml` configures:
+The root `render.yaml` configures:
 - **Disk mount** at `/opt/render/project/data` (5GB) for persistent DuckDB + SQLite
 - **Python 3.11** environment with uvicorn
-- **Auto-scaling** (Render handles this for web services)
+- **Single start command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+
+Frontend is served by FastAPI from `frontend/public`, so one Render web service runs both frontend and backend.
 
 ---
 

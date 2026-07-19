@@ -218,14 +218,13 @@ class CubeEngine:
         """)
 
     def build(self, df: pd.DataFrame, profiler_result: dict) -> dict:
-        import logging
-        logger = logging.getLogger("axilattice")
+        import sys
         t0 = time.time()
         self.dims = profiler_result["dims"]
         self.measures = profiler_result["measures"]
         self.time_col = profiler_result.get("time_col")
         self.excluded_dims = profiler_result.get("excluded_dims", [])
-        logger.info(f"Build: {len(self.dims)} dims, {len(self.measures)} measures, time_col={self.time_col}")
+        print(f"[BUILD] Build: {len(self.dims)} dims, {len(self.measures)} measures, time_col={self.time_col}", file=sys.stderr, flush=True)
         
         self.conn.execute(f"DELETE FROM {CUBE_TABLE}")
         self.conn.register("_src", df)
@@ -251,11 +250,11 @@ class CubeEngine:
                 for combo in combinations(dim_names, r):
                     combo_key = "|".join(sorted(combo))
                     rows_inserted += self._agg_and_insert(grain, period_expr, list(combo), combo_key)
-            logger.info(f"Build: grain={grain} completed in {time.time()-t_grain:.2f}s, total_rows={rows_inserted}")
+            print(f"[BUILD] grain={grain} completed in {time.time()-t_grain:.2f}s, total_rows={rows_inserted}", file=sys.stderr, flush=True)
 
-        logger.info(f"Build: starting deltas computation")
+        print(f"[BUILD] starting deltas computation", file=sys.stderr, flush=True)
         self._compute_deltas()
-        logger.info(f"Build: deltas completed")
+        print(f"[BUILD] deltas completed", file=sys.stderr, flush=True)
         self._build_time = time.time() - t0
         meta = {
             "dims": json.dumps([d["col"] for d in self.dims]),
@@ -270,7 +269,7 @@ class CubeEngine:
                 INSERT INTO {META_TABLE} VALUES (?, ?)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """, [k, v])
-        logger.info(f"Build: completed in {self._build_time:.2f}s, {rows_inserted} rows inserted")
+        print(f"[BUILD] completed in {self._build_time:.2f}s, {rows_inserted} rows inserted", file=sys.stderr, flush=True)
         return {
             "cube_cells": rows_inserted, "dims_cubed": len(cube_dims),
             "dims_excluded": len(self.excluded_dims), "grains": len(TIME_GRAINS),
@@ -871,32 +870,33 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
             "file_name": fname, "rows": len(df), "cols": len(df.columns)}
 
 def _build_cube_bg(sid: str, df: pd.DataFrame, schema_ctx: dict):
+    import sys
+    import traceback
     try:
-        import logging
-        logger = logging.getLogger("axilattice")
+        print(f"[BUILD] [{sid}] Starting cube build for {len(df)} rows, {len(df.columns)} cols", file=sys.stderr, flush=True)
         session = _SESSIONS.get(sid)
         if not session: 
+            print(f"[BUILD] [{sid}] Session not found!", file=sys.stderr, flush=True)
             return
-        logger.info(f"[{sid}] Starting cube build for {len(df)} rows, {len(df.columns)} cols")
+        print(f"[BUILD] [{sid}] CubeEngine initializing at {session.db_path}", file=sys.stderr, flush=True)
         # Use a session-scoped DB file to avoid cross-session lock contention.
         cube = CubeEngine(db_path=session.db_path)
-        logger.info(f"[{sid}] CubeEngine initialized, calling build()")
+        print(f"[BUILD] [{sid}] CubeEngine initialized, calling build()", file=sys.stderr, flush=True)
         stats = cube.build(df, schema_ctx)
-        logger.info(f"[{sid}] Cube build completed: {stats}")
+        print(f"[BUILD] [{sid}] Cube build completed: {stats}", file=sys.stderr, flush=True)
         session.conn = cube.conn
         session.cube_ready = True
         session.build_status = "ready"
         session.build_stats = stats
-        logger.info(f"[{sid}] Session state updated to ready")
+        print(f"[BUILD] [{sid}] Session state updated to ready", file=sys.stderr, flush=True)
     except Exception as e:
-        import logging
-        import traceback
-        logger = logging.getLogger("axilattice")
-        logger.error(f"[{sid}] Cube build failed: {str(e)}\n{traceback.format_exc()}")
+        print(f"[BUILD] [{sid}] Cube build failed: {str(e)}", file=sys.stderr, flush=True)
+        print(f"[BUILD] [{sid}] Traceback:\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         session = _SESSIONS.get(sid)
         if session:
             session.build_status = "error"
-            session.build_error = str(e) + "\n" + traceback.format_exc()
+            session.build_error = f"{str(e)}\n{traceback.format_exc()}"
+            print(f"[BUILD] [{sid}] Error saved to session", file=sys.stderr, flush=True)
 
 @app.get("/schema")
 async def get_schema(session_id: str = "default"):

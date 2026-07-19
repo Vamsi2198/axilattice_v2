@@ -324,31 +324,36 @@ class CubeEngine:
         if result_df.empty:
             print(f"[BUILD]     Empty result for {dim_combo}", file=sys.stderr, flush=True)
             return 0
-        rows = 0
-        print(f"[BUILD]     Inserting {len(result_df)} rows x {len(self.measures)} measures", file=sys.stderr, flush=True)
+        # Build all rows to insert as a list
+        rows_to_insert = []
         for _, row in result_df.iterrows():
             period_key = str(row["period_key"])
             dim_json = str(row["dim_json"])
             for m in self.measures:
                 col = m["col"]
-                try:
-                    self.conn.execute(f"""
-                        INSERT OR REPLACE INTO {CUBE_TABLE}
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, [
-                        grain, period_key, dim_combo, dim_json, col,
-                        float(row.get(f"{col}_sum", 0) or 0),
-                        int(row.get(f"{col}_cnt", 0) or 0),
-                        float(row.get(f"{col}_min", 0) or 0),
-                        float(row.get(f"{col}_max", 0) or 0),
-                        float(row.get(f"{col}_avg", 0) or 0),
-                        float(row.get(f"{col}_std", 0) or 0),
-                    ])
-                    rows += 1
-                except Exception:
-                    pass
-        print(f"[BUILD]     Insert complete for {dim_combo}: {rows} cube cells created", file=sys.stderr, flush=True)
-        return rows
+                rows_to_insert.append((
+                    grain, period_key, dim_combo, dim_json, col,
+                    float(row.get(f"{col}_sum", 0) or 0),
+                    int(row.get(f"{col}_cnt", 0) or 0),
+                    float(row.get(f"{col}_min", 0) or 0),
+                    float(row.get(f"{col}_max", 0) or 0),
+                    float(row.get(f"{col}_avg", 0) or 0),
+                    float(row.get(f"{col}_std", 0) or 0),
+                ))
+        
+        # Bulk insert all rows using executemany
+        if rows_to_insert:
+            print(f"[BUILD]     Bulk inserting {len(rows_to_insert)} rows", file=sys.stderr, flush=True)
+            try:
+                self.conn.executemany(f"""
+                    INSERT OR REPLACE INTO {CUBE_TABLE}
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, rows_to_insert)
+                print(f"[BUILD]     Bulk insert complete for {dim_combo}: {len(rows_to_insert)} cells", file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"[BUILD]     Bulk insert error for {dim_combo}: {str(e)}", file=sys.stderr, flush=True)
+                pass
+        return len(rows_to_insert)
 
     def _compute_deltas(self):
         self.conn.execute("""

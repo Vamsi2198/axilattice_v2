@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AxiLattice Standalone — Zero-Backend Insight Engine</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+  body{font-family:'Inter',system-ui;}
+  .voice-ring{animation:ring 1.5s ease-out infinite;}
+  @keyframes ring{0%{transform:scale(1);opacity:0.6;}100%{transform:scale(1.6);opacity:0;}}
+  .drop-zone{border:2px dashed #d4d4d8;transition:all 0.2s;}
+  .drop-zone.dragover{border-color:#0ea5e9;background:#f0f9ff;}
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+<div id="app" class="max-w-6xl mx-auto px-4 py-8">
+  <!-- Header -->
+  <div class="mb-8 text-center">
+    <h1 class="text-3xl font-bold text-gray-900">AxiLattice <span class="text-sky-600">Standalone</span></h1>
+    <p class="text-gray-500 mt-2">Zero-backend. Pure browser. Pre-computed cube engine.</p>
+    <div class="mt-3 inline-flex items-center gap-2 text-xs px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full">
+      <span class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+      All processing happens in your browser — no data leaves your machine
+    </div>
+  </div>
+
+  <!-- Upload -->
+  <div id="upload-section" class="mb-8">
+    <div id="drop-zone" class="drop-zone rounded-2xl p-12 text-center bg-white">
+      <svg class="w-12 h-12 mx-auto text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+      <p class="text-gray-700 font-medium">Drop a CSV file here, or click to browse</p>
+      <p class="text-gray-400 text-sm mt-1">Supports CSV with headers. Auto-detects dates, numbers, categories.</p>
+      <input type="file" id="file-input" accept=".csv" class="hidden">
+    </div>
+  </div>
+
+  <!-- Schema + Status -->
+  <div id="status-bar" class="hidden mb-6 bg-white rounded-xl border border-gray-200 p-4">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-4 text-sm">
+        <span class="text-gray-500">Rows: <b id="stat-rows" class="text-gray-900">—</b></span>
+        <span class="text-gray-500">Measures: <b id="stat-measures" class="text-gray-900">—</b></span>
+        <span class="text-gray-500">Dimensions: <b id="stat-dims" class="text-gray-900">—</b></span>
+        <span class="text-gray-500">Time: <b id="stat-time" class="text-gray-900">—</b></span>
+        <span class="text-gray-500">Cube cells: <b id="stat-cells" class="text-gray-900">—</b></span>
+      </div>
+      <span id="build-badge" class="text-xs px-2 py-1 bg-amber-50 text-amber-700 rounded-full">Building...</span>
+    </div>
+  </div>
+
+  <!-- Query Interface -->
+  <div id="query-section" class="hidden mb-8">
+    <div class="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+      <div class="flex items-center gap-3">
+        <button id="mic-btn" class="relative p-3 rounded-xl bg-gray-100 hover:bg-red-50 text-gray-500 hover:text-red-500 transition-colors">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
+          <span id="mic-ring" class="absolute inset-0 rounded-xl border-2 border-red-400 voice-ring hidden"></span>
+        </button>
+        <input id="query-input" type="text" placeholder="Ask anything... e.g. 'revenue by region this month'" 
+          class="flex-1 bg-transparent outline-none text-sm placeholder:text-gray-400">
+        <button id="ask-btn" class="px-4 py-2 bg-sky-600 text-white rounded-xl text-sm font-medium hover:bg-sky-700 transition-colors">Ask</button>
+      </div>
+      <div id="suggestions" class="flex flex-wrap gap-2 mt-3"></div>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="results" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   STANDALONE ENGINE — Ported from engine.js + query resolution
+   ════════════════════════════════════════════════════════════════════════ */
+
+const CARDINALITY_CUTOFF = 50;
+const ID_RATIO_THRESHOLD = 0.85;
+const MIN_NUMERIC_UNIQUE = 12;
+const TEXT_AVG_LEN = 60;
+const ID_NAME_HINTS = ["id","uuid","guid","key","code","ref"];
+const TIME_GRAINS = ["day","week","month","quarter","year"];
+
+function parseCSV(text) {
+  const rows = [];
+  let field = "", row = [], inQuotes = false;
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], n = text[i+1];
+    if (inQuotes) {
+      if (c === '"' && n === '"') { field += '"'; i++; }
+      else if (c === '"') inQuotes = false;
+      else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ",") { row.push(field); field = ""; }
+      else if (c === "\r" && n === "\n") { row.push(field); rows.push(row); row=[]; field=""; i++; }
+      else if (c === "\n" || c === "\r") { row.push(field); rows.push(row); row=[]; field=""; }
+      else field += c;
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  if (!rows.length) return { headers: [], data: [] };
+  const headers = rows[0].map(h => h.trim());
+  const data = [];
+  for (let r = 1; r < rows.length; r++) {
+    if (rows[r].length === 1 && rows[r][0] === "") continue;
+    const obj = {};
+    headers.forEach((h, ci) => { obj[h] = rows[r][ci] !== undefined ? rows[r][ci] : ""; });
+    data.push(obj);
+  }
+  return { headers, data };
+}
+
+const DATE_RE = [
+  /^\d{4}-\d{2}-\d{2}$/, /^\d{4}\/\d{2}\/\d{2}$/, /^\d{2}[-/]\d{2}[-/]\d{4}$/,
+  /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/, /^\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4}$/,
+];
+function looksLikeDate(vals) {
+  const sample = vals.slice(0, 60).filter(v => v !== "" && v != null);
+  if (sample.length < 3) return false;
+  let hits = 0;
+  for (const v of sample) {
+    const s = String(v).trim();
+    if (DATE_RE.some(re => re.test(s))) {
+      const d = new Date(s.replace(/\//g, "-"));
+      if (!isNaN(d) && d.getFullYear() > 1900 && d.getFullYear() < 2200) hits++;
+    }
+  }
+  return hits / sample.length > 0.8;
+}
+function isNumericVal(v) { return v !== "" && v != null && !isNaN(Number(v)) && isFinite(Number(v)); }
+function nameLooksLikeId(name) { return name.toLowerCase().split(/[_\s-]+/).some(t => ID_NAME_HINTS.includes(t)); }
+
+function profile(headers, data) {
+  const n = data.length;
+  const dims = [], measures = [], excludedDims = [], idCols = [];
+  let timeCol = null;
+  const schema = {};
+  for (const col of headers) {
+    const raw = data.map(r => r[col]);
+    const nonNull = raw.filter(v => v !== "" && v != null);
+    const distinct = new Set(nonNull);
+    const uniq = distinct.size;
+    const ratio = n ? uniq / n : 0;
+    const nullPct = n ? (1 - nonNull.length / n) * 100 : 0;
+    const numericShare = nonNull.length ? nonNull.filter(isNumericVal).length / nonNull.length : 0;
+    const isNum = numericShare > 0.95;
+    let type;
+    if (!timeCol && looksLikeDate(nonNull)) { type = "temporal"; timeCol = col; }
+    else if (nameLooksLikeId(col) && (uniq > CARDINALITY_CUTOFF || ratio >= ID_RATIO_THRESHOLD)) { type = "identifier"; idCols.push(col); }
+    else if (isNum) {
+      if (uniq <= MIN_NUMERIC_UNIQUE) { type = "dimension"; dims.push({ col, cardinality: uniq, coded: true, values: [...distinct].map(Number).sort((a,b)=>a-b).map(String) }); }
+      else { const nums = nonNull.map(Number); const mean = nums.reduce((a,b)=>a+b,0)/(nums.length||1); const std = Math.sqrt(nums.reduce((a,b)=>a+(b-mean)**2,0)/(nums.length||1)); if (std === 0) { type = "identifier"; idCols.push(col); } else { type = "measure"; measures.push({ col, mean, std, min: Math.min(...nums), max: Math.max(...nums) }); } }
+    }
+    else if (uniq === 2) { type = "dimension"; dims.push({ col, cardinality: 2, values:[...distinct] }); }
+    else {
+      const avgLen = nonNull.length ? nonNull.reduce((a,v)=>a+String(v).length,0)/nonNull.length : 0;
+      if (avgLen > TEXT_AVG_LEN) type = "text";
+      else if (ratio >= ID_RATIO_THRESHOLD && uniq > CARDINALITY_CUTOFF) { type = "identifier"; idCols.push(col); }
+      else if (uniq <= CARDINALITY_CUTOFF) { type = "dimension"; dims.push({ col, cardinality: uniq, values:[...distinct] }); }
+      else { type = "dim_high_card"; excludedDims.push({ col, cardinality: uniq }); }
+    }
+    schema[col] = { type, cardinality: uniq, nullPct: +nullPct.toFixed(1), sample: [...distinct].slice(0,5).map(String) };
+  }
+  return { dims, measures, excludedDims, idCols, timeCol, rowCount: n, colCount: headers.length, schema };
+}
+
+function periodKey(dateStr, grain) {
+  const d = new Date(dateStr);
+  if (isNaN(d)) return null;
+  const y = d.getFullYear(), m = d.getMonth() + 1;
+  switch(grain) {
+    case "day": return dateStr.slice(0,10);
+    case "week": { const t = new Date(Date.UTC(y, d.getMonth(), d.getDate())); const day = t.getUTCDay() || 7; t.setUTCDate(t.getUTCDate() + 4 - day); const yStart = new Date(Date.UTC(t.getUTCFullYear(),0,1)); const wk = Math.ceil((((t - yStart)/86400000)+1)/7); return `${t.getUTCFullYear()}-W${String(wk).padStart(2,"0")}`; }
+    case "month": return `${y}-${String(m).padStart(2,"0")}`;
+    case "quarter": return `${y}-Q${Math.ceil(m/3)}`;
+    case "year": return `${y}`;
+    default: return null;
+  }
+}
+
+function buildCube(data, prof) {
+  const { dims, measures, timeCol } = prof;
+  const cubeDims = dims.filter(d => d.cardinality <= CARDINALITY_CUTOFF);
+  const measureCols = measures.map(m => m.col);
+  const cube = { cells: {}, totals: {}, meta: {} };
+  for (const g of TIME_GRAINS) { cube.cells[g] = {}; cube.totals[g] = {}; }
+  const bump = (bucket, measure, val) => {
+    let c = bucket[measure]; if (!c) c = bucket[measure] = { sum:0, count:0, min:Infinity, max:-Infinity };
+    c.sum += val; c.count += 1; if (val < c.min) c.min = val; if (val > c.max) c.max = val;
+  };
+  for (const row of data) {
+    if (!timeCol) continue;
+    const dateStr = row[timeCol]; if (!dateStr) continue;
+    const mvals = {};
+    for (const mc of measureCols) { const v = row[mc]; if (v === "" || v == null || isNaN(Number(v))) continue; mvals[mc] = Number(v); }
+    for (const g of TIME_GRAINS) {
+      const pk = periodKey(dateStr, g); if (!pk) continue;
+      if (!cube.totals[g][pk]) cube.totals[g][pk] = {};
+      for (const mc in mvals) bump(cube.totals[g][pk], mc, mvals[mc]);
+      for (const d of cubeDims) {
+        const dv = row[d.col]; if (dv === "" || dv == null) continue;
+        const combo = d.col;
+        if (!cube.cells[g][combo]) cube.cells[g][combo] = {};
+        if (!cube.cells[g][combo][pk]) cube.cells[g][combo][pk] = {};
+        if (!cube.cells[g][combo][pk][dv]) cube.cells[g][combo][pk][dv] = {};
+        for (const mc in mvals) bump(cube.cells[g][combo][pk][dv], mc, mvals[mc]);
+      }
+    }
+  }
+  let n = 0;
+  for (const g of TIME_GRAINS) {
+    n += Object.keys(cube.totals[g] || {}).length;
+    for (const combo in cube.cells[g]) for (const pk in cube.cells[g][combo]) n += Object.keys(cube.cells[g][combo][pk]).length;
+  }
+  cube.meta = { dims: cubeDims, measures, timeCol, excludedDims: prof.excludedDims, cellCount: n };
+  return cube;
+}
+
+function allPeriods(cube, grain) { return Object.keys(cube.totals[grain] || {}).sort(); }
+function latestPeriod(cube, grain) { const keys = allPeriods(cube, grain); return keys.length ? keys.at(-1) : null; }
+function isRateMeasure(cube, measure) { return /(pct|percent|rate|ratio|margin|rating|score|avg|mean|min$|_min|time)/.test(measure.toLowerCase()); }
+
+function queryBreakdown(cube, dim, measure, grain, period) {
+  const pk = period || latestPeriod(cube, grain); if (!pk) return [];
+  const bucket = cube.cells[grain]?.[dim]?.[pk] || {};
+  const rateLike = isRateMeasure(cube, measure);
+  return Object.entries(bucket).map(([label, cell]) => {
+    const c = cell[measure]; const value = c ? (rateLike ? c.sum/(c.count||1) : c.sum) : 0;
+    return { label, value };
+  }).sort((a,b) => b.value - a.value);
+}
+function queryTrend(cube, measure, grain, nPeriods=12) {
+  const periods = allPeriods(cube, grain).slice(-nPeriods);
+  const rateLike = isRateMeasure(cube, measure);
+  return periods.map(pk => { const c = cube.totals[grain]?.[pk]?.[measure]; const value = c ? (rateLike ? c.sum/(c.count||1) : c.sum) : 0; return { period: pk, value }; });
+}
+function queryTotal(cube, measure, grain, period) {
+  const pk = period || latestPeriod(cube, grain); if (!pk) return { value:0, delta:null, period:null };
+  const rateLike = isRateMeasure(cube, measure);
+  const c = cube.totals[grain]?.[pk]?.[measure];
+  const value = c ? (rateLike ? c.sum/(c.count||1) : c.sum) : 0;
+  const periods = allPeriods(cube, grain); const idx = periods.indexOf(pk);
+  let delta = null;
+  if (idx > 0) { const pc = cube.totals[grain]?.[periods[idx-1]]?.[measure]; const pv = pc ? (rateLike ? pc.sum/(pc.count||1) : pc.sum) : 0; delta = pv ? (value - pv)/pv : null; }
+  return { value, delta, period: pk };
+}
+function queryTopK(cube, dim, measure, grain, k=5, period) { return queryBreakdown(cube, dim, measure, grain, period).slice(0, k); }
+
+/* ─── NLU Fallback (same regex logic as backend) ──────────────────────────── */
+function fallbackParse(text, schemaCtx) {
+  const dims = schemaCtx.dims.map(d => d.col);
+  const measures = schemaCtx.measures.map(m => m.col);
+  const ql = text.toLowerCase();
+  let itype = "breakdown";
+  if (/trend|over time|trajectory|direction|history/.test(ql)) itype = "trend";
+  else if (/top|best|worst|rank|highest|lowest/.test(ql)) itype = "topk";
+  else if (/total|overall|grand|aggregate|sum/.test(ql)) itype = "total";
+  else if (/vs|cross|heatmap|matrix/.test(ql)) itype = "cross";
+  let measure = measures[0] || "value";
+  for (const m of measures) if (new RegExp(m.replace(/_/g, " "), "i").test(ql) || new RegExp(m, "i").test(ql)) measure = m;
+  let dimension = dims[0] || null;
+  for (const d of dims) if (new RegExp(d.replace(/_/g, " "), "i").test(ql) || new RegExp(d, "i").test(ql)) dimension = d;
+  let grain = "month";
+  if (/daily|day|yesterday|today/.test(ql)) grain = "day";
+  else if (/week|weekly/.test(ql)) grain = "week";
+  else if (/quarter|quarterly|qoq/.test(ql)) grain = "quarter";
+  else if (/year|yearly|annual|yoy/.test(ql)) grain = "year";
+  const km = ql.match(/\btop\s+(\d+)\b/); const k = km ? parseInt(km[1]) : 5;
+  return { insight_type: itype, measure, dimension, dimension2: dims[1] || null, grain, k, period_key: null, title: text.slice(0,60) };
+}
+
+/* ─── Card Resolution ───────────────────────────────────────────────────── */
+function resolveCard(intent, cube, schemaCtx, rawText) {
+  const itype = intent.insight_type, measure = intent.measure, dim = intent.dimension, dim2 = intent.dimension2;
+  const grain = intent.grain || "month", k = intent.k || 5, period = intent.period_key;
+  let chartData = [], kpi = null, delta = null, periodKey = period, chartType = "bar";
+
+  if (itype === "trend") {
+    const n = {day:30, week:16, month:12, quarter:8, year:5}[grain] || 12;
+    const rows = queryTrend(cube, measure, grain, n);
+    chartData = rows.map(r => ({ period: r.period, value: r.value }));
+    chartType = "area";
+    if (rows.length) { kpi = rows[rows.length-1].value; periodKey = rows[rows.length-1].period; }
+  } else if (itype === "total") {
+    const result = queryTotal(cube, measure, grain, period);
+    kpi = result.value; delta = result.delta; periodKey = result.period;
+    const rows = queryTrend(cube, measure, grain, 12);
+    chartData = rows.map(r => ({ period: r.period, value: r.value }));
+    chartType = "area";
+  } else if (itype === "topk") {
+    if (!dim) {
+      const rows = queryTrend(cube, measure, grain, 10);
+      chartData = rows.map(r => ({ period: r.period, value: r.value }));
+      chartType = "area";
+      if (rows.length) { kpi = rows[rows.length-1].value; periodKey = rows[rows.length-1].period; }
+    } else {
+      const rows = queryTopK(cube, dim, measure, grain, k, period);
+      chartData = rows.map(r => ({ label: r.label, value: r.value }));
+      chartType = "bar";
+      if (rows.length) { kpi = rows[0].value; }
+    }
+  } else if (itype === "breakdown") {
+    if (dim) {
+      const rows = queryBreakdown(cube, dim, measure, grain, period);
+      chartType = rows.length <= 5 ? "pie" : "bar";
+      chartData = rows.map(r => ({ label: r.label, value: r.value }));
+      if (rows.length) { kpi = rows.reduce((a,r) => a + r.value, 0); }
+    } else {
+      const result = queryTotal(cube, measure, grain, period);
+      kpi = result.value; delta = result.delta; periodKey = result.period;
+      chartType = "kpi";
+    }
+  }
+
+  const fmt = v => { if (v == null) return "N/A"; if (Math.abs(v) >= 1e6) return (v/1e6).toFixed(1)+"M"; if (Math.abs(v) >= 1e3) return (v/1e3).toFixed(1)+"K"; return v.toFixed(2); };
+  let summary = "";
+  if (chartData.length === 0 && kpi == null) summary = "No data available.";
+  else if (itype === "trend" && chartData.length) { const first = chartData[0]?.value || 1, last = chartData[chartData.length-1]?.value || 0; const chg = first ? ((last-first)/first*100) : 0; summary = `${measure} ${chg>=0?"grew":"declined"} ${Math.abs(chg).toFixed(1)}% over the period. Latest: ${fmt(last)}.`; }
+  else if (itype === "total" && kpi != null) summary = `Total ${measure}: ${fmt(kpi)}.`;
+  else if (itype === "breakdown" && chartData.length) { const top = chartData[0]; const tot = chartData.reduce((a,r) => a + (r.value||0), 0); const pct = tot ? (top.value/tot*100) : 0; summary = `${top.label} leads with ${fmt(top.value)} (${pct.toFixed(0)}% of total).`; }
+  else if (itype === "topk" && chartData.length) summary = `#1 is ${chartData[0].label} at ${fmt(chartData[0].value)}.`;
+  else summary = `${measure} insight computed.`;
+
+  return { id: Math.random().toString(36).slice(2,10), title: intent.title || rawText.slice(0,60), insight_type: itype, measure, dimension: dim, grain, chart_type: chartType, chart_data: chartData, kpi, delta, period: periodKey, summary };
+}
+
+/* ─── UI Logic ──────────────────────────────────────────────────────────── */
+let globalCube = null;
+let globalSchema = null;
+let globalData = null;
+
+function renderCard(card) {
+  const div = document.createElement('div');
+  div.className = 'bg-white rounded-xl border border-gray-200 p-4 shadow-sm';
+  const deltaStr = card.delta != null ? `<span class="${card.delta>0?'text-emerald-600':'text-red-500'} text-xs font-medium ml-2">${card.delta>0?'▲':'▼'} ${Math.abs(card.delta*100).toFixed(1)}%</span>` : '';
+
+  let chartHtml = '';
+  if (card.chart_type === 'kpi') {
+    const fmt = v => { if (v == null) return '—'; if (Math.abs(v) >= 1e6) return (v/1e6).toFixed(1)+'M'; if (Math.abs(v) >= 1e3) return (v/1e3).toFixed(1)+'K'; return v.toFixed(2); };
+    chartHtml = `<div class="flex flex-col items-center justify-center h-48"><div class="text-4xl font-bold text-gray-900">${fmt(card.kpi)}</div>${deltaStr}<div class="text-xs text-gray-400 mt-1">${card.period || ''}</div></div>`;
+  } else {
+    chartHtml = `<canvas id="chart-${card.id}" class="w-full h-48"></canvas>`;
+  }
+
+  div.innerHTML = `
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h3 class="font-semibold text-gray-900 text-sm">${card.title}</h3>
+        <p class="text-xs text-gray-400 mt-0.5">${card.measure} • ${card.grain}${card.period ? ' • '+card.period : ''}</p>
+      </div>
+    </div>
+    ${chartHtml}
+    <p class="text-xs text-gray-500 mt-3">${card.summary}</p>
+  `;
+
+  document.getElementById('results').prepend(div);
+
+  if (card.chart_type !== 'kpi' && card.chart_data.length) {
+    setTimeout(() => {
+      const ctx = document.getElementById(`chart-${card.id}`);
+      if (!ctx) return;
+      const labels = card.chart_data.map(d => d.label || d.period);
+      const values = card.chart_data.map(d => d.value);
+      const color = card.delta > 0 ? '#10b981' : card.delta < 0 ? '#ef4444' : '#0ea5e9';
+
+      if (card.chart_type === 'pie') {
+        new Chart(ctx, { type: 'doughnut', data: { labels, datasets: [{ data: values, backgroundColor: ['#0ea5e9','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899'], borderWidth:0 }] }, options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{position:'right',labels:{boxWidth:10,font:{size:10}}}} } });
+      } else if (card.chart_type === 'area') {
+        new Chart(ctx, { type: 'line', data: { labels, datasets: [{ data: values, borderColor: color, backgroundColor: color+'20', fill:true, tension:0.3, pointRadius:2 }] }, options: { responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true,grid:{color:'#f4f4f5'}},x:{grid:{display:false}}}, plugins:{legend:{display:false}} } });
+      } else {
+        new Chart(ctx, { type: 'bar', data: { labels, datasets: [{ data: values, backgroundColor: color+'90', borderRadius:4, barThickness:20 }] }, options: { responsive:true, maintainAspectRatio:false, scales:{y:{beginAtZero:true,grid:{color:'#f4f4f5'}},x:{grid:{display:false}}}, plugins:{legend:{display:false}} } });
+      }
+    }, 50);
+  }
+}
+
+function generateSuggestions(schema) {
+  const m = schema.measures[0]?.col || 'revenue';
+  const dims = schema.dims.map(d => d.col);
+  const d0 = dims[0], d1 = dims[1];
+  return [
+    `Total ${m} this month`, `${m} trend last year`,
+    d0 ? `Top 5 ${d0} by ${m}` : `Overall ${m}`,
+    d0 ? `${m} by ${d0}` : `${m} breakdown`,
+    d1 ? `${m} by ${d1} this quarter` : `${m} quarterly trend`,
+    d0 ? `Compare ${m} by ${d0} vs last quarter` : `Year over year ${m}`
+  ].filter(Boolean);
+}
+
+function handleQuery(text) {
+  if (!globalCube || !globalSchema) return;
+  const intent = fallbackParse(text, globalSchema);
+  const card = resolveCard(intent, globalCube, globalSchema, text);
+  renderCard(card);
+}
+
+/* ─── Event Listeners ───────────────────────────────────────────────────── */
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+['dragenter','dragover','dragleave','drop'].forEach(e => {
+  dropZone.addEventListener(e, (ev) => { ev.preventDefault(); ev.stopPropagation(); });
+});
+['dragenter','dragover'].forEach(e => {
+  dropZone.addEventListener(e, () => dropZone.classList.add('dragover'));
+});
+['dragleave','drop'].forEach(e => {
+  dropZone.addEventListener(e, () => dropZone.classList.remove('dragover'));
+});
+
+dropZone.addEventListener('drop', (e) => {
+  const files = e.dataTransfer.files;
+  if (files.length) processFile(files[0]);
+});
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => { if (e.target.files.length) processFile(e.target.files[0]); });
+
+function processFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const text = e.target.result;
+    const parsed = parseCSV(text);
+    if (!parsed.data.length) { alert('No data found in CSV'); return; }
+
+    document.getElementById('upload-section').classList.add('hidden');
+    document.getElementById('status-bar').classList.remove('hidden');
+    document.getElementById('build-badge').textContent = 'Profiling...';
+
+    globalData = parsed.data;
+    globalSchema = profile(parsed.headers, parsed.data);
+
+    document.getElementById('stat-rows').textContent = globalSchema.rowCount.toLocaleString();
+    document.getElementById('stat-measures').textContent = globalSchema.measures.length;
+    document.getElementById('stat-dims').textContent = globalSchema.dims.length;
+    document.getElementById('stat-time').textContent = globalSchema.timeCol || '—';
+
+    document.getElementById('build-badge').textContent = 'Building cube...';
+
+    // Build cube (may take a moment for large files)
+    setTimeout(() => {
+      globalCube = buildCube(globalData, globalSchema);
+      document.getElementById('stat-cells').textContent = globalCube.meta.cellCount.toLocaleString();
+      document.getElementById('build-badge').className = 'text-xs px-2 py-1 bg-emerald-50 text-emerald-700 rounded-full';
+      document.getElementById('build-badge').textContent = '✓ Ready';
+      document.getElementById('query-section').classList.remove('hidden');
+
+      const suggs = generateSuggestions(globalSchema);
+      const sugDiv = document.getElementById('suggestions');
+      sugDiv.innerHTML = suggs.map(s => `<button class="text-xs px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-full text-gray-600 hover:border-sky-400 hover:text-sky-700 transition-colors">${s}</button>`).join('');
+      sugDiv.querySelectorAll('button').forEach(btn => {
+        btn.addEventListener('click', () => handleQuery(btn.textContent));
+      });
+    }, 100);
+  };
+  reader.readAsText(file);
+}
+
+/* Query input */
+document.getElementById('ask-btn').addEventListener('click', () => {
+  const input = document.getElementById('query-input');
+  if (input.value.trim()) { handleQuery(input.value.trim()); input.value = ''; }
+});
+document.getElementById('query-input').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') { handleQuery(e.target.value.trim()); e.target.value = ''; }
+});
+
+/* Voice (Web Speech API) */
+const micBtn = document.getElementById('mic-btn');
+const micRing = document.getElementById('mic-ring');
+let recognition = null;
+if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  recognition = new SR();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.onresult = (e) => {
+    const text = Array.from(e.results).map(r => r[0].transcript).join('');
+    document.getElementById('query-input').value = text;
+  };
+  recognition.onend = () => { micRing.classList.add('hidden'); micBtn.classList.remove('text-red-500'); };
+}
+micBtn.addEventListener('click', () => {
+  if (!recognition) { alert('Speech recognition not supported. Use Chrome/Edge.'); return; }
+  if (micRing.classList.contains('hidden')) {
+    recognition.start();
+    micRing.classList.remove('hidden');
+    micBtn.classList.add('text-red-500');
+  } else {
+    recognition.stop();
+  }
+});
+</script>
+</body>
+</html>

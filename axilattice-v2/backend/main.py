@@ -218,11 +218,15 @@ class CubeEngine:
         """)
 
     def build(self, df: pd.DataFrame, profiler_result: dict) -> dict:
+        import logging
+        logger = logging.getLogger("axilattice")
         t0 = time.time()
         self.dims = profiler_result["dims"]
         self.measures = profiler_result["measures"]
         self.time_col = profiler_result.get("time_col")
         self.excluded_dims = profiler_result.get("excluded_dims", [])
+        logger.info(f"Build: {len(self.dims)} dims, {len(self.measures)} measures, time_col={self.time_col}")
+        
         self.conn.execute(f"DELETE FROM {CUBE_TABLE}")
         self.conn.register("_src", df)
         if self.time_col:
@@ -238,6 +242,7 @@ class CubeEngine:
         rows_inserted = 0
 
         for grain in TIME_GRAINS:
+            t_grain = time.time()
             period_expr = _grain_expr("_date_parsed", grain) if self.time_col else "'__all__'"
             rows_inserted += self._agg_and_insert(grain, period_expr, [], "__total__")
             for dcol in dim_names:
@@ -246,8 +251,11 @@ class CubeEngine:
                 for combo in combinations(dim_names, r):
                     combo_key = "|".join(sorted(combo))
                     rows_inserted += self._agg_and_insert(grain, period_expr, list(combo), combo_key)
+            logger.info(f"Build: grain={grain} completed in {time.time()-t_grain:.2f}s, total_rows={rows_inserted}")
 
+        logger.info(f"Build: starting deltas computation")
         self._compute_deltas()
+        logger.info(f"Build: deltas completed")
         self._build_time = time.time() - t0
         meta = {
             "dims": json.dumps([d["col"] for d in self.dims]),
@@ -262,6 +270,7 @@ class CubeEngine:
                 INSERT INTO {META_TABLE} VALUES (?, ?)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """, [k, v])
+        logger.info(f"Build: completed in {self._build_time:.2f}s, {rows_inserted} rows inserted")
         return {
             "cube_cells": rows_inserted, "dims_cubed": len(cube_dims),
             "dims_excluded": len(self.excluded_dims), "grains": len(TIME_GRAINS),
@@ -863,20 +872,31 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
 
 def _build_cube_bg(sid: str, df: pd.DataFrame, schema_ctx: dict):
     try:
+        import logging
+        logger = logging.getLogger("axilattice")
         session = _SESSIONS.get(sid)
-        if not session: return
+        if not session: 
+            return
+        logger.info(f"[{sid}] Starting cube build for {len(df)} rows, {len(df.columns)} cols")
         # Use a session-scoped DB file to avoid cross-session lock contention.
         cube = CubeEngine(db_path=session.db_path)
+        logger.info(f"[{sid}] CubeEngine initialized, calling build()")
         stats = cube.build(df, schema_ctx)
+        logger.info(f"[{sid}] Cube build completed: {stats}")
         session.conn = cube.conn
         session.cube_ready = True
         session.build_status = "ready"
         session.build_stats = stats
+        logger.info(f"[{sid}] Session state updated to ready")
     except Exception as e:
+        import logging
+        import traceback
+        logger = logging.getLogger("axilattice")
+        logger.error(f"[{sid}] Cube build failed: {str(e)}\n{traceback.format_exc()}")
         session = _SESSIONS.get(sid)
         if session:
             session.build_status = "error"
-            session.build_error = str(e)
+            session.build_error = str(e) + "\n" + traceback.format_exc()
 
 @app.get("/schema")
 async def get_schema(session_id: str = "default"):

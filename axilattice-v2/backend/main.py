@@ -28,7 +28,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, asdict
 
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -824,8 +824,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.post("/upload")
 async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...),
-                    session_id: Optional[str] = None):
-    sid = session_id or str(uuid.uuid4())[:12]
+                    session_id: Optional[str] = None,
+                    session_id_form: Optional[str] = Form(None, alias="session_id")):
+    sid = session_id or session_id_form or str(uuid.uuid4())[:12]
     session = await get_or_create_session(sid)
     content = await file.read(); fname = file.filename or "data.csv"
     try:

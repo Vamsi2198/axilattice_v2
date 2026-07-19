@@ -395,11 +395,14 @@ function App() {
     setError(null);
     const form = new FormData();
     form.append('file', file);
-    form.append('session_id', sessionId);
     try {
-      const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: form });
+      const res = await fetch(`${API_BASE}/upload?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST', body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Upload failed');
+      if (data.session_id) {
+        setSessionId(data.session_id);
+        localStorage.setItem('axl_session', data.session_id);
+      }
       setSchema(data.schema);
     } catch (e) { setError(e.message); setBuildStatus('idle'); }
   };

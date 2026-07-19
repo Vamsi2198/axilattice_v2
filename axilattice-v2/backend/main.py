@@ -836,9 +836,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...),
                     session_id: Optional[str] = None,
                     session_id_form: Optional[str] = Form(None, alias="session_id")):
+    import sys
     sid = session_id or session_id_form or str(uuid.uuid4())[:12]
+    print(f"[UPLOAD] [{sid}] Starting upload, file={file.filename}", file=sys.stderr, flush=True)
     session = await get_or_create_session(sid)
     content = await file.read(); fname = file.filename or "data.csv"
+    print(f"[UPLOAD] [{sid}] File read, size={len(content)} bytes", file=sys.stderr, flush=True)
     try:
         if fname.endswith(".parquet"):
             df = pd.read_parquet(io.BytesIO(content))
@@ -856,8 +859,10 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
             if df is None: raise ValueError("Could not decode file")
         if df.empty: raise ValueError("File contains no data")
     except Exception as e:
+        print(f"[UPLOAD] [{sid}] File parse error: {str(e)}", file=sys.stderr, flush=True)
         raise HTTPException(status_code=400, detail=f"File read error: {str(e)}")
 
+    print(f"[UPLOAD] [{sid}] Parsed: {len(df)} rows, {len(df.columns)} cols", file=sys.stderr, flush=True)
     profiler = DataProfiler(df)
     schema_ctx = profiler.result()
     df_parsed = profiler.parsed_df()
@@ -865,7 +870,9 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
     session.df = df_parsed
     session.build_status = "building"
     session.build_error = None
+    print(f"[UPLOAD] [{sid}] Adding background task for cube build", file=sys.stderr, flush=True)
     background_tasks.add_task(_build_cube_bg, sid, df_parsed, schema_ctx)
+    print(f"[UPLOAD] [{sid}] Upload complete, returning response", file=sys.stderr, flush=True)
     return {"status": "building", "session_id": sid, "schema": schema_ctx,
             "file_name": fname, "rows": len(df), "cols": len(df.columns)}
 

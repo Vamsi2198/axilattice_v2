@@ -76,8 +76,10 @@ class VoiceQueryRequest(BaseModel):
 
 class SessionState:
     """Isolated per-session cube + context."""
-    def __init__(self, session_id: str, db_dir: str = "/tmp/axl_sessions"):
+    def __init__(self, session_id: str, db_dir: Optional[str] = None):
         self.session_id = session_id
+        if db_dir is None:
+            db_dir = os.environ.get("AXL_SESSION_DIR", "/tmp/axl_sessions")
         self.db_dir = db_dir
         os.makedirs(db_dir, exist_ok=True)
         self.db_path = os.path.join(db_dir, f"cube_{session_id}.duckdb")
@@ -863,8 +865,8 @@ def _build_cube_bg(sid: str, df: pd.DataFrame, schema_ctx: dict):
     try:
         session = _SESSIONS.get(sid)
         if not session: return
-        db_path = os.environ.get("DUCKDB_PATH", session.db_path)
-        cube = CubeEngine(db_path=db_path)
+        # Use a session-scoped DB file to avoid cross-session lock contention.
+        cube = CubeEngine(db_path=session.db_path)
         stats = cube.build(df, schema_ctx)
         session.conn = cube.conn
         session.cube_ready = True
@@ -883,6 +885,7 @@ async def get_schema(session_id: str = "default"):
         raise HTTPException(status_code=404, detail="No data loaded for this session")
     return {"session_id": session_id, "build_status": session.build_status,
             "schema": session.schema_ctx,
+            "build_error": session.build_error,
             "cube_stats": session.conn.execute("SELECT COUNT(*) FROM axl_cube").fetchone()[0] if session.conn else None}
 
 @app.get("/health")

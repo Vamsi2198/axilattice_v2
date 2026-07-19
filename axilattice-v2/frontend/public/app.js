@@ -368,7 +368,10 @@ function App() {
         const data = await res.json();
         setBuildStatus(data.build_status);
         if (data.build_status === 'ready') { setSchema(data.schema); clearInterval(iv); }
-        if (data.build_status === 'error') { setError('Cube build failed'); clearInterval(iv); }
+        if (data.build_status === 'error') {
+          setError(data.build_error || 'Cube build failed');
+          clearInterval(iv);
+        }
       } catch (e) { /* ignore */ }
     }, 2000);
     return () => clearInterval(iv);

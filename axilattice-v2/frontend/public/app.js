@@ -359,6 +359,28 @@ function App() {
   const [suggestions, setSuggestions] = useState([]);
   const fileInputRef = useRef(null);
 
+  // Hydrate session state on page load/reload so query input reflects backend reality.
+  useEffect(() => {
+    let cancelled = false;
+    const loadSchema = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/schema?session_id=${sessionId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        if (data?.build_status) setBuildStatus(data.build_status);
+        if (data?.schema) setSchema(data.schema);
+        if (data?.build_status === 'error') {
+          setError(data.build_error || 'Cube build failed. Please upload again.');
+        }
+      } catch (e) {
+        // Ignore bootstrap errors; user can still upload a new file.
+      }
+    };
+    loadSchema();
+    return () => { cancelled = true; };
+  }, [sessionId]);
+
   // Poll build status
   useEffect(() => {
     if (buildStatus !== 'building') return;
@@ -396,6 +418,7 @@ function App() {
     if (!file) return;
     setBuildStatus('building');
     setError(null);
+    setCards([]);
     const form = new FormData();
     form.append('file', file);
     try {
@@ -411,7 +434,11 @@ function App() {
   };
 
   const handleQuery = async (text) => {
-    if (!text.trim() || buildStatus !== 'ready') return;
+    if (!text.trim()) return;
+    if (buildStatus !== 'ready') {
+      setError('Cube is not ready yet. Upload data and wait for the status to become Live.');
+      return;
+    }
     setLoading(true); setError(null);
     try {
       const res = await fetch(`${API_BASE}/query`, {
@@ -474,7 +501,7 @@ function App() {
             {/* Input */}
             <VoiceInput 
               onSubmit={handleQuery} 
-              disabled={buildStatus !== 'ready' && buildStatus !== 'idle'}
+              disabled={buildStatus !== 'ready'}
             />
 
             {/* Suggestions */}

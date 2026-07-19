@@ -268,12 +268,12 @@ class CubeEngine:
 
     def _agg_and_insert(self, grain, period_expr, group_cols, dim_combo):
         measure_aggs = ", ".join([
-            f'SUM("{m['col']}") AS {m['col']}_sum, '
-            f'COUNT("{m['col']}") AS {m['col']}_cnt, '
-            f'MIN("{m['col']}") AS {m['col']}_min, '
-            f'MAX("{m['col']}") AS {m['col']}_max, '
-            f'AVG("{m['col']}") AS {m['col']}_avg, '
-            f'STDDEV("{m['col']}") AS {m['col']}_std'
+            f'SUM("{m["col"]}") AS "{m["col"]}_sum", '
+            f'COUNT("{m["col"]}") AS "{m["col"]}_cnt", '
+            f'MIN("{m["col"]}") AS "{m["col"]}_min", '
+            f'MAX("{m["col"]}") AS "{m["col"]}_max", '
+            f'AVG("{m["col"]}") AS "{m["col"]}_avg", '
+            f'STDDEV("{m["col"]}") AS "{m["col"]}_std"'
             for m in self.measures
         ])
         if group_cols:
@@ -281,7 +281,7 @@ class CubeEngine:
             group_expr = ", ".join(quoted) + ", "
             group_by = "GROUP BY " + ", ".join(quoted) + ", period_key"
             dim_json_expr = "json_object(" + ", ".join([
-                f"'{c}', CAST("{c}" AS VARCHAR)" for c in group_cols
+                f"'{c}', CAST(\"{c}\" AS VARCHAR)" for c in group_cols
             ]) + ")"
         else:
             group_expr = ""

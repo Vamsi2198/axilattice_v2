@@ -365,10 +365,17 @@ function App() {
     const loadSchema = async () => {
       try {
         const res = await fetch(`${API_BASE}/schema?session_id=${sessionId}`);
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (res.status === 404 && !cancelled) {
+            setBuildStatus('idle');
+          }
+          return;
+        }
         const data = await res.json();
         if (cancelled) return;
-        if (data?.build_status) setBuildStatus(data.build_status);
+        if (data?.build_status) {
+          setBuildStatus(data.build_status);
+        }
         if (data?.schema) setSchema(data.schema);
         if (data?.build_status === 'error') {
           setError(data.build_error || 'Cube build failed. Please upload again.');
@@ -387,7 +394,14 @@ function App() {
     const iv = setInterval(async () => {
       try {
         const res = await fetch(`${API_BASE}/schema?session_id=${sessionId}`);
+        if (!res.ok) {
+          // Keep polling while build is in progress; transient errors should not reset UI state.
+          return;
+        }
         const data = await res.json();
+        if (!data?.build_status) {
+          return;
+        }
         setBuildStatus(data.build_status);
         if (data.build_status === 'ready') { setSchema(data.schema); clearInterval(iv); }
         if (data.build_status === 'error') {
@@ -428,6 +442,9 @@ function App() {
       if (data.session_id) {
         setSessionId(data.session_id);
         localStorage.setItem('axl_session', data.session_id);
+      }
+      if (data.status) {
+        setBuildStatus(data.status);
       }
       setSchema(data.schema);
     } catch (e) { setError(e.message); setBuildStatus('idle'); }

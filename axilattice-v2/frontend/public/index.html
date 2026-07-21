@@ -1,32 +1,1069 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AxiLattice Insight Engine</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: { sans: ['Inter','system-ui'], mono: ['JetBrains Mono','monospace'] },
-          colors: {
-            axl: { 50:'#f0f9ff',100:'#e0f2fe',200:'#bae6fd',300:'#7dd3fc',400:'#38bdf8',500:'#0ea5e9',600:'#0284c7',700:'#0369a1',800:'#075985',900:'#0c4a6e' },
-            surface: { 50:'#fafafa',100:'#f4f4f5',200:'#e4e4e7',300:'#d4d4d8',800:'#27272a',900:'#18181b' }
-          }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AxiLattice v2 — Voice-First Insight Engine</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+  body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:#f8fafc;}
+  .voice-ring{animation:ring 1.5s ease-out infinite;}
+  @keyframes ring{0%{transform:scale(1);opacity:0.6;}100%{transform:scale(1.6);opacity:0;}}
+  .drop-zone{border:2px dashed #cbd5e1;transition:all 0.2s;}
+  .drop-zone.dragover{border-color:#0ea5e9;background:#f0f9ff;}
+  .card-enter{animation:cardIn 0.3s ease-out forwards;opacity:0;transform:translateY(12px);}
+  @keyframes cardIn{to{opacity:1;transform:translateY(0);}}
+  .pulse-dot{animation:pulse 2s cubic-bezier(0.4,0,0.6,1) infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.5;}}
+  .chart-container{position:relative;height:220px;}
+  .scroll-hide::-webkit-scrollbar{display:none;}
+  .scroll-hide{-ms-overflow-style:none;scrollbar-width:none;}
+  .toast-enter{animation:toastIn 0.3s ease-out forwards;}
+  @keyframes toastIn{from{transform:translateX(100%);opacity:0;}to{transform:translateX(0);opacity:1;}}
+  .fade-in{animation:fadeIn 0.2s ease-out forwards;}
+  @keyframes fadeIn{from{opacity:0;}to{opacity:1;}}
+  .skeleton{background:linear-gradient(90deg,#f1f5f9 25%,#e2e8f0 50%,#f1f5f9 75%);background-size:200% 100%;animation:skeleton 1.5s infinite;}
+  @keyframes skeleton{0%{background-position:200% 0;}100%{background-position:-200% 0;}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+// ═══════════════════════════════════════════════════════════════════════════
+// AxiLattice v2 — Full React Frontend
+// ═══════════════════════════════════════════════════════════════════════════
+
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ── Config ───────────────────────────────────────────────────────────────
+// Same-origin by default (backend serves this SPA in production/single-service
+// Render deploys). Falls back to localhost:8000 only when this file is opened
+// via a separate static server (e.g. `python -m http.server 3000`).
+const API_BASE = window.REACT_APP_API_URL || (location.port === "3000" ? "http://localhost:8000" : "");
+const SESSION_KEY = "axl_session_id";
+
+// ── Icons ──────────────────────────────────────────────────────────────────
+const Icons = {
+  mic: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>,
+  send: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>,
+  upload: () => <svg className="w-12 h-12 mx-auto text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>,
+  chart: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>,
+  dashboard: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>,
+  alert: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>,
+  history: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>,
+  plus: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>,
+  close: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>,
+  check: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"/></svg>,
+  trash: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>,
+  save: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4"/></svg>,
+  speaker: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/></svg>,
+  grid: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>,
+  wide: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"/></svg>,
+  single: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>,
+  sparkles: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"/></svg>,
+  menu: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"/></svg>,
+  loading: () => <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/></svg>,
+  cube: () => <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>,
+};
+
+// ── Utilities ────────────────────────────────────────────────────────────
+const fmt = (v) => {
+  if (v == null) return "—";
+  if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(1) + "B";
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + "M";
+  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + "K";
+  return v.toFixed(2);
+};
+
+const genSessionId = () => {
+  let s = localStorage.getItem(SESSION_KEY);
+  if (!s) { s = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 8); localStorage.setItem(SESSION_KEY, s); }
+  return s;
+};
+
+// ── API Client ─────────────────────────────────────────────────────────────
+const api = {
+  async upload(file, sessionId) {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("session_id", sessionId);
+    const r = await fetch(`${API_BASE}/upload`, { method: "POST", body: fd });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async query(text, sessionId, voiceMode = false) {
+    const r = await fetch(`${API_BASE}/query`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, session_id: sessionId, voice_mode: voiceMode }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async queryStream(text, sessionId, onEvent) {
+    const r = await fetch(`${API_BASE}/query/stream`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, session_id: sessionId }),
+    });
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const data = line.slice(6).trim();
+          if (data === "[DONE]") return;
+          try { onEvent(JSON.parse(data)); } catch (e) {}
         }
       }
     }
-  </script>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-</head>
-<body class="bg-surface-50 text-surface-900 font-sans antialiased">
-  <div id="root"></div>
-  <script type="text/babel" src="/app.js"></script>
+  },
+  async voice(textFallback, sessionId) {
+    const r = await fetch(`${API_BASE}/voice`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text_fallback: textFallback, session_id: sessionId }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async suggest(sessionId) {
+    const r = await fetch(`${API_BASE}/suggest?session_id=${sessionId}`);
+    if (!r.ok) return { suggestions: [] };
+    return r.json();
+  },
+  async schema(sessionId) {
+    const r = await fetch(`${API_BASE}/schema?session_id=${sessionId}`);
+    if (!r.ok) return null;
+    return r.json();
+  },
+  async saveDashboard(name, layout, cards, sessionId) {
+    const r = await fetch(`${API_BASE}/dashboard`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, layout, cards, session_id: sessionId }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async listDashboards(sessionId) {
+    const r = await fetch(`${API_BASE}/dashboard?session_id=${sessionId}`);
+    if (!r.ok) return { dashboards: [] };
+    return r.json();
+  },
+  async loadDashboard(id) {
+    const r = await fetch(`${API_BASE}/dashboard/${id}`);
+    if (!r.ok) return null;
+    return r.json();
+  },
+  async createAlert(payload) {
+    const r = await fetch(`${API_BASE}/alerts`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async listAlerts(sessionId) {
+    const r = await fetch(`${API_BASE}/alerts?session_id=${sessionId}`);
+    if (!r.ok) return { alerts: [] };
+    return r.json();
+  },
+  async deleteAlert(id) {
+    await fetch(`${API_BASE}/alerts/${id}`, { method: "DELETE" });
+  },
+  async conversations(sessionId, limit = 20) {
+    const r = await fetch(`${API_BASE}/conversations/${sessionId}?limit=${limit}`);
+    if (!r.ok) return { messages: [] };
+    return r.json();
+  },
+  async health() {
+    try { const r = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(5000) }); return r.ok ? r.json() : null; } catch { return null; }
+  },
+};
+
+// ── Toast System ───────────────────────────────────────────────────────────
+function Toast({ message, type = "info", onClose }) {
+  useEffect(() => { const t = setTimeout(onClose, 4000); return () => clearTimeout(t); }, [onClose]);
+  const colors = type === "error" ? "bg-red-50 text-red-700 border-red-200" : type === "success" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-sky-50 text-sky-700 border-sky-200";
+  return (
+    <div className={`toast-enter fixed top-4 right-4 z-50 px-4 py-3 rounded-xl border shadow-lg ${colors} flex items-center gap-2 text-sm font-medium`}>
+      <span>{message}</span>
+      <button onClick={onClose} className="ml-2 opacity-60 hover:opacity-100"><Icons.close/></button>
+    </div>
+  );
+}
+
+// ── Chart Component ────────────────────────────────────────────────────────
+function InsightChart({ card }) {
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    if (!canvasRef.current || card.chart_type === "kpi") return;
+    const ctx = canvasRef.current.getContext("2d");
+    if (chartRef.current) chartRef.current.destroy();
+
+    const labels = card.chart_data.map(d => d.label || d.period);
+    const values = card.chart_data.map(d => d.value);
+    const color = card.delta > 0 ? "#10b981" : card.delta < 0 ? "#ef4444" : "#0ea5e9";
+    const bgColors = ["#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"];
+
+    const config = {
+      type: card.chart_type === "pie" ? "doughnut" : card.chart_type === "area" ? "line" : "bar",
+      data: {
+        labels,
+        datasets: [{
+          data: values,
+          borderColor: color,
+          backgroundColor: card.chart_type === "pie" ? bgColors : color + "20",
+          fill: card.chart_type === "area",
+          tension: 0.3,
+          pointRadius: card.chart_type === "area" ? 3 : 0,
+          borderWidth: card.chart_type === "area" ? 2 : 0,
+          borderRadius: card.chart_type === "bar" ? 4 : 0,
+          barThickness: card.chart_type === "bar" ? 20 : undefined,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: card.chart_type === "pie", position: "right", labels: { boxWidth: 10, font: { size: 10 } } } },
+        scales: card.chart_type === "pie" ? {} : {
+          y: { beginAtZero: true, grid: { color: "#f4f4f5" }, ticks: { font: { size: 10 } } },
+          x: { grid: { display: false }, ticks: { font: { size: 10 }, maxRotation: 45 } },
+        },
+      },
+    };
+    chartRef.current = new Chart(ctx, config);
+    return () => { if (chartRef.current) chartRef.current.destroy(); };
+  }, [card]);
+
+  if (card.chart_type === "kpi") {
+    return (
+      <div className="flex flex-col items-center justify-center h-52">
+        <div className="text-5xl font-bold text-gray-900">{fmt(card.kpi)}</div>
+        {card.delta != null && (
+          <div className={`text-sm font-semibold mt-2 ${card.delta > 0 ? "text-emerald-600" : "text-red-500"}`}>
+            {card.delta > 0 ? "▲" : "▼"} {Math.abs(card.delta * 100).toFixed(1)}% vs prior
+          </div>
+        )}
+        <div className="text-xs text-gray-400 mt-1">{card.period || ""}</div>
+      </div>
+    );
+  }
+
+  return <div className="chart-container"><canvas ref={canvasRef} /></div>;
+}
+
+// ── Insight Card ─────────────────────────────────────────────────────────────
+function InsightCard({ card, onAddToDashboard, onSpeak, compact = false }) {
+  const [added, setAdded] = useState(false);
+  const handleAdd = () => { onAddToDashboard(card); setAdded(true); setTimeout(() => setAdded(false), 2000); };
+
+  return (
+    <div className={`card-enter bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-md transition-shadow ${compact ? "" : "p-5"}`}>
+      <div className="flex items-start justify-between mb-3">
+        <div className="min-w-0">
+          <h3 className="font-semibold text-gray-900 text-sm truncate">{card.title}</h3>
+          <p className="text-xs text-gray-400 mt-0.5">{card.measure} &bull; {card.grain}{card.period ? " &bull; " + card.period : ""}</p>
+        </div>
+        <div className="flex items-center gap-1 ml-2 shrink-0">
+          <button onClick={() => onSpeak(card.summary)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-sky-600 transition-colors" title="Speak">
+            <Icons.speaker/>
+          </button>
+          <button onClick={handleAdd} className={`p-1.5 rounded-lg transition-colors ${added ? "bg-emerald-50 text-emerald-600" : "hover:bg-gray-100 text-gray-400 hover:text-sky-600"}`} title="Add to dashboard">
+            {added ? <Icons.check/> : <Icons.plus/>}
+          </button>
+        </div>
+      </div>
+      <InsightChart card={card} />
+      <p className="text-xs text-gray-500 mt-3 leading-relaxed">{card.summary}</p>
+      {card.voice_suggestions && card.voice_suggestions.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {card.voice_suggestions.map((s, i) => (
+            <span key={i} className="text-[11px] px-2 py-0.5 bg-sky-50 text-sky-700 rounded-full border border-sky-100">{s}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Upload Section ─────────────────────────────────────────────────────────
+function UploadSection({ sessionId, onUploadComplete, onToast }) {
+  const [dragOver, setDragOver] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const data = await api.upload(file, sessionId);
+      onUploadComplete(data);
+      onToast("File uploaded! Cube building...", "success");
+    } catch (err) {
+      onToast(err.message || "Upload failed", "error");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <div
+        className={`drop-zone rounded-2xl p-16 text-center bg-white cursor-pointer ${dragOver ? "dragover" : ""}`}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); }}
+        onClick={() => fileInputRef.current?.click()}
+      >
+        <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls,.parquet" className="hidden" onChange={(e) => handleFile(e.target.files[0])} />
+        {uploading ? (
+          <div className="flex flex-col items-center">
+            <Icons.loading/>
+            <p className="text-gray-600 font-medium mt-3">Uploading &amp; profiling...</p>
+          </div>
+        ) : (
+          <>
+            <Icons.upload/>
+            <p className="text-gray-700 font-medium">Drop a file here, or click to browse</p>
+            <p className="text-gray-400 text-sm mt-1">CSV, Excel, or Parquet. Auto-detects schema.</p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Query Bar ──────────────────────────────────────────────────────────────
+function QueryBar({ sessionId, schema, onResult, onToast, onAddToDashboard }) {
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [suggestions, setSuggestions] = useState([]);
+  const [listening, setListening] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const inputRef = useRef(null);
+  const recognitionRef = useRef(null);
+
+  useEffect(() => {
+    if (schema) {
+      api.suggest(sessionId).then(r => setSuggestions(r.suggestions || []));
+    }
+  }, [schema, sessionId]);
+
+  useEffect(() => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SR) {
+      recognitionRef.current = new SR();
+      recognitionRef.current.continuous = false;
+      recognitionRef.current.interimResults = true;
+      recognitionRef.current.onresult = (e) => {
+        const transcript = Array.from(e.results).map(r => r[0].transcript).join("");
+        setText(transcript);
+      };
+      recognitionRef.current.onend = () => setListening(false);
+      recognitionRef.current.onerror = () => setListening(false);
+    }
+  }, []);
+
+  const handleSubmit = async (queryText) => {
+    if (!queryText.trim() || loading) return;
+    setLoading(true);
+    setText("");
+    try {
+      const card = await api.query(queryText, sessionId);
+      onResult(card);
+    } catch (err) {
+      onToast(err.message || "Query failed", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStream = async (queryText) => {
+    if (!queryText.trim() || loading) return;
+    setLoading(true);
+    setText("");
+    try {
+      let finalCard = null;
+      await api.queryStream(queryText, sessionId, (event) => {
+        if (event.type === "card") finalCard = event.payload;
+      });
+      if (finalCard) onResult(finalCard);
+    } catch (err) {
+      onToast(err.message || "Stream failed", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleMic = () => {
+    if (!recognitionRef.current) { onToast("Speech recognition not supported. Use Chrome/Edge.", "error"); return; }
+    if (listening) { recognitionRef.current.stop(); }
+    else { recognitionRef.current.start(); setListening(true); }
+  };
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4">
+      <div className="flex items-center gap-3">
+        <button
+          onClick={toggleMic}
+          className={`relative p-3 rounded-xl transition-colors ${listening ? "bg-red-50 text-red-500" : "bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-500"}`}
+        >
+          <Icons.mic/>
+          {listening && <span className="absolute inset-0 rounded-xl border-2 border-red-400 voice-ring" />}
+        </button>
+        <input
+          ref={inputRef}
+          type="text"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onFocus={() => setShowSuggestions(true)}
+          onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+          onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(text); }}
+          placeholder="Ask anything... e.g. 'revenue by region this month'"
+          className="flex-1 bg-transparent outline-none text-sm placeholder:text-gray-400"
+        />
+        <button
+          onClick={() => handleStream(text)}
+          disabled={loading || !text.trim()}
+          className="px-4 py-2 bg-sky-600 text-white rounded-xl text-sm font-medium hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+        >
+          {loading ? <><Icons.loading/> Processing...</> : <><Icons.send/> Ask</>}
+        </button>
+      </div>
+
+      {showSuggestions && suggestions.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2 fade-in">
+          {suggestions.map((s, i) => (
+            <button
+              key={i}
+              onClick={() => handleSubmit(s)}
+              className="text-xs px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-full text-gray-600 hover:border-sky-400 hover:text-sky-700 hover:bg-sky-50 transition-colors"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Status Bar ─────────────────────────────────────────────────────────────
+function StatusBar({ schema, buildStatus, cubeStats }) {
+  if (!schema) return null;
+  const badgeColor = buildStatus === "ready" ? "bg-emerald-50 text-emerald-700" : buildStatus === "building" ? "bg-amber-50 text-amber-700" : "bg-red-50 text-red-700";
+  const badgeText = buildStatus === "ready" ? "Ready" : buildStatus === "building" ? "Building..." : "Error";
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-4 mb-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-5 text-sm flex-wrap">
+          <span className="text-gray-500">Rows: <b className="text-gray-900">{schema.row_count?.toLocaleString() || "—"}</b></span>
+          <span className="text-gray-500">Measures: <b className="text-gray-900">{schema.measures?.length || 0}</b></span>
+          <span className="text-gray-500">Dimensions: <b className="text-gray-900">{schema.dims?.length || 0}</b></span>
+          <span className="text-gray-500">Time: <b className="text-gray-900">{schema.time_col || "—"}</b></span>
+          <span className="text-gray-500">Cube cells: <b className="text-gray-900">{cubeStats?.toLocaleString() || "—"}</b></span>
+        </div>
+        <span className={`text-xs px-3 py-1 rounded-full font-medium ${badgeColor}`}>{badgeText}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Dashboard Builder ──────────────────────────────────────────────────────
+function DashboardBuilder({ cards, layout, onLayoutChange, onRemoveCard, onSave, savedDashboards, onLoadDashboard }) {
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const gridClass = layout === "grid" ? "grid-cols-1 md:grid-cols-2" : layout === "wide" ? "grid-cols-1" : "grid-cols-1";
+  const cardSpan = layout === "single" ? "md:col-span-2" : "";
+
+  const handleSave = async () => {
+    if (!name.trim()) return;
+    setSaving(true);
+    try {
+      await onSave(name, layout, cards);
+      setName("");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4 flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+          {["grid", "wide", "single"].map(l => (
+            <button
+              key={l}
+              onClick={() => onLayoutChange(l)}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors ${layout === l ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+            >
+              {l === "grid" ? <Icons.grid/> : l === "wide" ? <Icons.wide/> : <Icons.single/>}
+              {l.charAt(0).toUpperCase() + l.slice(1)}
+            </button>
+          ))}
+        </div>
+        <div className="h-6 w-px bg-gray-200" />
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Dashboard name..."
+          className="text-sm px-3 py-1.5 border border-gray-200 rounded-lg outline-none focus:border-sky-400 w-48"
+        />
+        <button
+          onClick={handleSave}
+          disabled={saving || !name.trim() || cards.length === 0}
+          className="px-3 py-1.5 bg-sky-600 text-white rounded-lg text-xs font-medium hover:bg-sky-700 disabled:opacity-50 flex items-center gap-1.5"
+        >
+          <Icons.save/> {saving ? "Saving..." : "Save"}
+        </button>
+      </div>
+
+      {savedDashboards.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-2">
+          <span className="text-xs text-gray-400 self-center">Saved:</span>
+          {savedDashboards.map(d => (
+            <button
+              key={d.id}
+              onClick={() => onLoadDashboard(d.id)}
+              className="text-xs px-3 py-1 bg-gray-50 border border-gray-200 rounded-full text-gray-600 hover:border-sky-400 hover:text-sky-700 transition-colors"
+            >
+              {d.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {cards.length === 0 ? (
+        <div className="text-center py-20 text-gray-400">
+          <Icons.dashboard/>
+          <p className="mt-2 text-sm">No cards yet. Run a query and click + to add cards here.</p>
+        </div>
+      ) : (
+        <div className={`grid ${gridClass} gap-4`}>
+          {cards.map((card, i) => (
+            <div key={card.id || i} className={`relative group ${cardSpan}`}>
+              <button
+                onClick={() => onRemoveCard(i)}
+                className="absolute top-2 right-2 z-10 p-1.5 bg-white/90 rounded-lg shadow-sm opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-red-500"
+              >
+                <Icons.trash/>
+              </button>
+              <InsightCard
+                card={card}
+                onAddToDashboard={() => {}}
+                onSpeak={() => {}}
+                compact={layout === "grid"}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Alert Manager ──────────────────────────────────────────────────────────
+function AlertManager({ sessionId, schema, onToast }) {
+  const [alerts, setAlerts] = useState([]);
+  const [form, setForm] = useState({ name: "", measure: "", grain: "month", threshold: "", direction: "above", dimension: "", dim_value: "" });
+  const [creating, setCreating] = useState(false);
+
+  const measures = schema?.measures?.map(m => m.col) || [];
+  const dims = schema?.dims?.map(d => d.col) || [];
+
+  useEffect(() => { loadAlerts(); }, [sessionId]);
+
+  const loadAlerts = async () => {
+    const r = await api.listAlerts(sessionId);
+    setAlerts(r.alerts || []);
+  };
+
+  const handleCreate = async () => {
+    if (!form.name || !form.measure || !form.threshold) return;
+    setCreating(true);
+    try {
+      await api.createAlert({ ...form, threshold: parseFloat(form.threshold), session_id: sessionId });
+      setForm({ name: "", measure: "", grain: "month", threshold: "", direction: "above", dimension: "", dim_value: "" });
+      loadAlerts();
+      onToast("Alert created!", "success");
+    } catch (err) {
+      onToast(err.message, "error");
+    } finally { setCreating(false); }
+  };
+
+  const handleDelete = async (id) => {
+    await api.deleteAlert(id);
+    loadAlerts();
+    onToast("Alert deleted", "success");
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h3 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2"><Icons.alert/> New Alert</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <input value={form.name} onChange={e => setForm({...form, name: e.target.value})} placeholder="Alert name" className="text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-sky-400" />
+          <select value={form.measure} onChange={e => setForm({...form, measure: e.target.value})} className="text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-sky-400 bg-white">
+            <option value="">Select measure</option>
+            {measures.map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <select value={form.grain} onChange={e => setForm({...form, grain: e.target.value})} className="text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-sky-400 bg-white">
+            {["day","week","month","quarter","year"].map(g => <option key={g} value={g}>{g}</option>)}
+          </select>
+          <input type="number" value={form.threshold} onChange={e => setForm({...form, threshold: e.target.value})} placeholder="Threshold value" className="text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-sky-400" />
+          <select value={form.direction} onChange={e => setForm({...form, direction: e.target.value})} className="text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-sky-400 bg-white">
+            <option value="above">Above threshold</option>
+            <option value="below">Below threshold</option>
+          </select>
+          <select value={form.dimension} onChange={e => setForm({...form, dimension: e.target.value})} className="text-sm px-3 py-2 border border-gray-200 rounded-lg outline-none focus:border-sky-400 bg-white">
+            <option value="">All dimensions (optional)</option>
+            {dims.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+        </div>
+        <button
+          onClick={handleCreate}
+          disabled={creating}
+          className="mt-3 px-4 py-2 bg-sky-600 text-white rounded-lg text-sm font-medium hover:bg-sky-700 disabled:opacity-50 flex items-center gap-2"
+        >
+          <Icons.plus/> {creating ? "Creating..." : "Create Alert"}
+        </button>
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        {alerts.length === 0 ? (
+          <div className="p-8 text-center text-gray-400 text-sm">No alerts yet. Create one above.</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-100">
+              <tr>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Name</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Measure</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Grain</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Threshold</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Direction</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Status</th>
+                <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {alerts.map(a => (
+                <tr key={a.id} className="border-b border-gray-50 hover:bg-gray-50/50">
+                  <td className="px-4 py-3 font-medium text-gray-900">{a.name}</td>
+                  <td className="px-4 py-3 text-gray-600">{a.measure}</td>
+                  <td className="px-4 py-3 text-gray-600">{a.grain}</td>
+                  <td className="px-4 py-3 text-gray-600">{a.threshold}</td>
+                  <td className="px-4 py-3"><span className={`text-xs px-2 py-0.5 rounded-full ${a.direction === "above" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>{a.direction}</span></td>
+                  <td className="px-4 py-3"><span className={`text-xs px-2 py-0.5 rounded-full ${a.active ? "bg-emerald-50 text-emerald-700" : "bg-gray-100 text-gray-500"}`}>{a.active ? "Active" : "Inactive"}</span></td>
+                  <td className="px-4 py-3 text-right">
+                    <button onClick={() => handleDelete(a.id)} className="p-1.5 text-gray-400 hover:text-red-500 transition-colors"><Icons.trash/></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Conversation Panel ───────────────────────────────────────────────────
+function ConversationPanel({ sessionId }) {
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const bottomRef = useRef(null);
+
+  useEffect(() => { loadMessages(); }, [sessionId]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  const loadMessages = async () => {
+    setLoading(true);
+    const r = await api.conversations(sessionId);
+    setMessages(r.messages || []);
+    setLoading(false);
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 h-[600px] flex flex-col">
+      <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2"><Icons.history/> Conversation</h3>
+        <button onClick={loadMessages} className="text-xs text-sky-600 hover:text-sky-700 font-medium">Refresh</button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 space-y-3 scroll-hide">
+        {loading && messages.length === 0 ? (
+          <div className="space-y-3">
+            {[1,2,3].map(i => <div key={i} className="skeleton h-12 rounded-lg" />)}
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="text-center text-gray-400 text-sm py-10">No conversation history yet.</div>
+        ) : (
+          messages.map((m, i) => (
+            <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm ${m.role === "user" ? "bg-sky-600 text-white rounded-br-md" : "bg-gray-100 text-gray-800 rounded-bl-md"}`}>
+                {m.content}
+                <div className="text-[10px] opacity-60 mt-1">{new Date(m.timestamp).toLocaleTimeString()}</div>
+              </div>
+            </div>
+          ))
+        )}
+        <div ref={bottomRef} />
+      </div>
+    </div>
+  );
+}
+
+// ── Schema Explorer ────────────────────────────────────────────────────────
+function SchemaExplorer({ schema }) {
+  if (!schema) return null;
+  const [activeTab, setActiveTab] = useState("overview");
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-5">
+      <div className="flex items-center gap-4 mb-4 border-b border-gray-100">
+        {["overview", "measures", "dimensions", "excluded"].map(t => (
+          <button
+            key={t}
+            onClick={() => setActiveTab(t)}
+            className={`pb-3 text-sm font-medium capitalize transition-colors ${activeTab === t ? "text-sky-600 border-b-2 border-sky-600" : "text-gray-500 hover:text-gray-700"}`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "overview" && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-gray-50 rounded-xl p-4 text-center">
+            <div className="text-2xl font-bold text-gray-900">{schema.row_count?.toLocaleString()}</div>
+            <div className="text-xs text-gray-500 mt-1">Rows</div>
+          </div>
+          <div className="bg-gray-50 rounded-xl p-4 text-center">
+            <div className="text-2xl font-bold text-gray-900">{schema.col_count}</div>
+            <div className="text-xs text-gray-500 mt-1">Columns</div>
+          </div>
+          <div className="bg-gray-50 rounded-xl p-4 text-center">
+            <div className="text-2xl font-bold text-gray-900">{schema.measures?.length}</div>
+            <div className="text-xs text-gray-500 mt-1">Measures</div>
+          </div>
+          <div className="bg-gray-50 rounded-xl p-4 text-center">
+            <div className="text-2xl font-bold text-gray-900">{schema.dims?.length}</div>
+            <div className="text-xs text-gray-500 mt-1">Dimensions</div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "measures" && (
+        <div className="space-y-2">
+          {schema.measures?.map(m => (
+            <div key={m.col} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+              <div>
+                <div className="text-sm font-medium text-gray-900">{m.col}</div>
+                <div className="text-xs text-gray-500">Mean: {fmt(m.mean)} | Std: {fmt(m.std)}</div>
+              </div>
+              <span className="text-xs px-2 py-0.5 bg-sky-50 text-sky-700 rounded-full">Measure</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {activeTab === "dimensions" && (
+        <div className="space-y-2">
+          {schema.dims?.map(d => (
+            <div key={d.col} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+              <div>
+                <div className="text-sm font-medium text-gray-900">{d.col}</div>
+                <div className="text-xs text-gray-500">{d.cardinality} unique values</div>
+              </div>
+              <span className="text-xs px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full">Dimension</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {activeTab === "excluded" && (
+        <div className="space-y-2">
+          {schema.excluded_dims?.length === 0 ? (
+            <div className="text-center text-gray-400 text-sm py-6">No high-cardinality dimensions excluded.</div>
+          ) : (
+            schema.excluded_dims?.map(d => (
+              <div key={d.col} className="flex items-center justify-between p-3 bg-amber-50 rounded-lg border border-amber-100">
+                <div>
+                  <div className="text-sm font-medium text-gray-900">{d.col}</div>
+                  <div className="text-xs text-gray-500">{d.cardinality} values &mdash; exceeds cutoff of 50</div>
+                </div>
+                <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">Excluded</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── TTS Helper ───────────────────────────────────────────────────────────────
+function speak(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 1.0;
+  utter.pitch = 1.0;
+  window.speechSynthesis.speak(utter);
+}
+
+// ── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const [sessionId] = useState(() => genSessionId());
+  const [view, setView] = useState("query");
+  const [schema, setSchema] = useState(null);
+  const [buildStatus, setBuildStatus] = useState("idle");
+  const [cubeStats, setCubeStats] = useState(null);
+  const [cards, setCards] = useState([]);
+  const [dashboardCards, setDashboardCards] = useState([]);
+  const [dashboardLayout, setDashboardLayout] = useState("grid");
+  const [savedDashboards, setSavedDashboards] = useState([]);
+  const [toasts, setToasts] = useState([]);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [backendHealth, setBackendHealth] = useState(null);
+  const pollRef = useRef(null);
+
+  useEffect(() => {
+    const check = async () => {
+      const h = await api.health();
+      setBackendHealth(h);
+    };
+    check();
+    const iv = setInterval(check, 30000);
+    return () => clearInterval(iv);
+  }, []);
+
+  useEffect(() => {
+    if (buildStatus === "building") {
+      pollRef.current = setInterval(async () => {
+        const s = await api.schema(sessionId);
+        if (s) {
+          setSchema(s.schema);
+          setBuildStatus(s.build_status);
+          setCubeStats(s.cube_stats);
+          if (s.build_status === "ready" || s.build_status === "error") {
+            clearInterval(pollRef.current);
+            if (s.build_status === "ready") addToast("Cube ready! Start querying.", "success");
+          }
+        }
+      }, 2000);
+      return () => clearInterval(pollRef.current);
+    }
+  }, [buildStatus, sessionId]);
+
+  const addToast = (message, type = "info") => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+  };
+
+  const removeToast = (id) => setToasts(prev => prev.filter(t => t.id !== id));
+
+  const handleUploadComplete = (data) => {
+    setSchema(data.schema);
+    setBuildStatus(data.status);
+    setCubeStats(null);
+  };
+
+  const handleQueryResult = (card) => {
+    setCards(prev => [card, ...prev]);
+  };
+
+  const handleAddToDashboard = (card) => {
+    setDashboardCards(prev => [...prev, card]);
+    addToast("Added to dashboard", "success");
+  };
+
+  const handleSaveDashboard = async (name, layout, cards) => {
+    const r = await api.saveDashboard(name, layout, cards, sessionId);
+    addToast(`Dashboard "${name}" saved!`, "success");
+    loadDashboards();
+    return r;
+  };
+
+  const loadDashboards = async () => {
+    const r = await api.listDashboards(sessionId);
+    setSavedDashboards(r.dashboards || []);
+  };
+
+  const handleLoadDashboard = async (id) => {
+    const d = await api.loadDashboard(id);
+    if (d) {
+      setDashboardCards(d.cards || []);
+      setDashboardLayout(d.layout || "grid");
+      setView("dashboard");
+      addToast(`Loaded "${d.name}"`, "success");
+    }
+  };
+
+  useEffect(() => { loadDashboards(); }, [sessionId]);
+
+  const sidebarItems = [
+    { id: "query", label: "Query", icon: Icons.sparkles },
+    { id: "dashboard", label: "Dashboard", icon: Icons.dashboard },
+    { id: "alerts", label: "Alerts", icon: Icons.alert },
+    { id: "history", label: "History", icon: Icons.history },
+    { id: "schema", label: "Schema", icon: Icons.cube },
+  ];
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex">
+      {/* Sidebar */}
+      <aside className={`${sidebarOpen ? "w-60" : "w-16"} bg-white border-r border-gray-200 flex flex-col transition-all duration-200 shrink-0`}>
+        <div className="p-4 flex items-center gap-3 border-b border-gray-100">
+          {sidebarOpen && <span className="font-bold text-lg text-gray-900 tracking-tight">AxiLattice</span>}
+          <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400">
+            <Icons.menu/>
+          </button>
+        </div>
+        <nav className="flex-1 py-3">
+          {sidebarItems.map(item => (
+            <button
+              key={item.id}
+              onClick={() => setView(item.id)}
+              className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm font-medium sidebar-link ${view === item.id ? "active" : "text-gray-600"} ${!sidebarOpen && "justify-center px-2"}`}
+            >
+              <item.icon/>
+              {sidebarOpen && item.label}
+            </button>
+          ))}
+        </nav>
+        <div className="p-4 border-t border-gray-100">
+          <div className={`flex items-center gap-2 text-xs text-gray-400 ${!sidebarOpen && "justify-center"}`}>
+            <div className={`w-2 h-2 rounded-full ${backendHealth ? "bg-emerald-500" : "bg-red-400"} pulse-dot`} />
+            {sidebarOpen && (backendHealth ? "Backend online" : "Backend offline")}
+          </div>
+          {sidebarOpen && (
+            <div className="mt-2 text-[10px] text-gray-300 font-mono truncate">{sessionId}</div>
+          )}
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="flex-1 min-w-0">
+        {/* Header */}
+        <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-30">
+          <div>
+            <h1 className="text-xl font-bold text-gray-900">
+              {view === "query" && "Query Engine"}
+              {view === "dashboard" && "Dashboard Builder"}
+              {view === "alerts" && "Alert Manager"}
+              {view === "history" && "Conversation History"}
+              {view === "schema" && "Schema Explorer"}
+            </h1>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {view === "query" && "Natural language analytics on your data"}
+              {view === "dashboard" && `${dashboardCards.length} cards &bull; ${dashboardLayout} layout`}
+              {view === "alerts" && "Threshold-based monitoring"}
+              {view === "history" && "Session conversation log"}
+              {view === "schema" && "Data profile and cube dimensions"}
+            </p>
+          </div>
+          {schema && (
+            <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 px-3 py-1.5 rounded-lg">
+              <span className="w-2 h-2 rounded-full bg-sky-500"></span>
+              {schema.file_name || "Dataset loaded"}
+            </div>
+          )}
+        </header>
+
+        {/* Content Area */}
+        <div className="p-6 max-w-7xl mx-auto">
+          {/* Toasts */}
+          {toasts.map(t => <Toast key={t.id} message={t.message} type={t.type} onClose={() => removeToast(t.id)} />)}
+
+          {/* QUERY VIEW */}
+          {view === "query" && (
+            <div>
+              {!schema ? (
+                <UploadSection sessionId={sessionId} onUploadComplete={handleUploadComplete} onToast={addToast} />
+              ) : (
+                <>
+                  <StatusBar schema={schema} buildStatus={buildStatus} cubeStats={cubeStats} />
+                  <QueryBar
+                    sessionId={sessionId}
+                    schema={schema}
+                    onResult={handleQueryResult}
+                    onToast={addToast}
+                    onAddToDashboard={handleAddToDashboard}
+                  />
+                  {cards.length > 0 && (
+                    <div className="mt-6">
+                      <h2 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                        <Icons.chart/> Results ({cards.length})
+                      </h2>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {cards.map((card, i) => (
+                          <InsightCard
+                            key={card.id || i}
+                            card={card}
+                            onAddToDashboard={handleAddToDashboard}
+                            onSpeak={speak}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* DASHBOARD VIEW */}
+          {view === "dashboard" && (
+            <DashboardBuilder
+              cards={dashboardCards}
+              layout={dashboardLayout}
+              onLayoutChange={setDashboardLayout}
+              onRemoveCard={(i) => setDashboardCards(prev => prev.filter((_, idx) => idx !== i))}
+              onSave={handleSaveDashboard}
+              savedDashboards={savedDashboards}
+              onLoadDashboard={handleLoadDashboard}
+            />
+          )}
+
+          {/* ALERTS VIEW */}
+          {view === "alerts" && (
+            <AlertManager
+              sessionId={sessionId}
+              schema={schema}
+              onToast={addToast}
+            />
+          )}
+
+          {/* HISTORY VIEW */}
+          {view === "history" && (
+            <ConversationPanel sessionId={sessionId} />
+          )}
+
+          {/* SCHEMA VIEW */}
+          {view === "schema" && (
+            <SchemaExplorer schema={schema} />
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+// ── Mount ────────────────────────────────────────────────────────────────────
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
 </body>
 </html>

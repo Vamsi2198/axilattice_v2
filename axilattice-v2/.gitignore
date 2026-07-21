@@ -1,1 +1,28 @@
 .env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+
+# Data / DB artifacts (generated at runtime, not source)
+*.duckdb
+axl_meta.db
+/tmp/
+backend/data/
+
+# Node (if any tooling is added later)
+node_modules/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
+

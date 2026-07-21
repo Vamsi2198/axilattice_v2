@@ -23,12 +23,13 @@ import sqlite3
 import hashlib
 import asyncio
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, List, Dict, Any, AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, asdict
 
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -76,10 +77,8 @@ class VoiceQueryRequest(BaseModel):
 
 class SessionState:
     """Isolated per-session cube + context."""
-    def __init__(self, session_id: str, db_dir: Optional[str] = None):
+    def __init__(self, session_id: str, db_dir: str = "/tmp/axl_sessions"):
         self.session_id = session_id
-        if db_dir is None:
-            db_dir = os.environ.get("AXL_SESSION_DIR", "/tmp/axl_sessions")
         self.db_dir = db_dir
         os.makedirs(db_dir, exist_ok=True)
         self.db_path = os.path.join(db_dir, f"cube_{session_id}.duckdb")
@@ -218,20 +217,14 @@ class CubeEngine:
         """)
 
     def build(self, df: pd.DataFrame, profiler_result: dict) -> dict:
-        import sys
         t0 = time.time()
         self.dims = profiler_result["dims"]
         self.measures = profiler_result["measures"]
         self.time_col = profiler_result.get("time_col")
         self.excluded_dims = profiler_result.get("excluded_dims", [])
-        print(f"[BUILD] Build: {len(self.dims)} dims, {len(self.measures)} measures, time_col={self.time_col}", file=sys.stderr, flush=True)
-        
-        print(f"[BUILD] Deleting old cube data", file=sys.stderr, flush=True)
         self.conn.execute(f"DELETE FROM {CUBE_TABLE}")
-        print(f"[BUILD] Registering source table", file=sys.stderr, flush=True)
         self.conn.register("_src", df)
         if self.time_col:
-            print(f"[BUILD] Parsing time column '{self.time_col}'", file=sys.stderr, flush=True)
             self.conn.execute(f"""
                 CREATE OR REPLACE TABLE _src_parsed AS
                 SELECT *, TRY_CAST("{self.time_col}" AS DATE) AS _date_parsed FROM _src
@@ -241,30 +234,19 @@ class CubeEngine:
 
         cube_dims = [d for d in self.dims if d["cardinality"] <= CARDINALITY_CUTOFF]
         dim_names = [d["col"] for d in cube_dims]
-        print(f"[BUILD] Cube dims: {dim_names}", file=sys.stderr, flush=True)
         rows_inserted = 0
 
         for grain in TIME_GRAINS:
-            print(f"[BUILD] Starting grain={grain}", file=sys.stderr, flush=True)
-            t_grain = time.time()
             period_expr = _grain_expr("_date_parsed", grain) if self.time_col else "'__all__'"
-            print(f"[BUILD]   grain={grain} total aggregation", file=sys.stderr, flush=True)
             rows_inserted += self._agg_and_insert(grain, period_expr, [], "__total__")
-            print(f"[BUILD]   grain={grain} total done, rows={rows_inserted}", file=sys.stderr, flush=True)
             for dcol in dim_names:
-                print(f"[BUILD]   grain={grain} dim={dcol}", file=sys.stderr, flush=True)
                 rows_inserted += self._agg_and_insert(grain, period_expr, [dcol], dcol)
-            print(f"[BUILD]   grain={grain} all 1d dims done", file=sys.stderr, flush=True)
             for r in range(2, MAX_DIM_CROSS + 1):
                 for combo in combinations(dim_names, r):
                     combo_key = "|".join(sorted(combo))
-                    print(f"[BUILD]   grain={grain} cross={combo_key}", file=sys.stderr, flush=True)
                     rows_inserted += self._agg_and_insert(grain, period_expr, list(combo), combo_key)
-            print(f"[BUILD] grain={grain} completed in {time.time()-t_grain:.2f}s, total_rows={rows_inserted}", file=sys.stderr, flush=True)
 
-        print(f"[BUILD] starting deltas computation", file=sys.stderr, flush=True)
         self._compute_deltas()
-        print(f"[BUILD] deltas completed", file=sys.stderr, flush=True)
         self._build_time = time.time() - t0
         meta = {
             "dims": json.dumps([d["col"] for d in self.dims]),
@@ -279,7 +261,6 @@ class CubeEngine:
                 INSERT INTO {META_TABLE} VALUES (?, ?)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """, [k, v])
-        print(f"[BUILD] completed in {self._build_time:.2f}s, {rows_inserted} rows inserted", file=sys.stderr, flush=True)
         return {
             "cube_cells": rows_inserted, "dims_cubed": len(cube_dims),
             "dims_excluded": len(self.excluded_dims), "grains": len(TIME_GRAINS),
@@ -287,14 +268,13 @@ class CubeEngine:
         }
 
     def _agg_and_insert(self, grain, period_expr, group_cols, dim_combo):
-        import sys
         measure_aggs = ", ".join([
-            f'SUM("{m["col"]}") AS "{m["col"]}_sum", '
-            f'COUNT("{m["col"]}") AS "{m["col"]}_cnt", '
-            f'MIN("{m["col"]}") AS "{m["col"]}_min", '
-            f'MAX("{m["col"]}") AS "{m["col"]}_max", '
-            f'AVG("{m["col"]}") AS "{m["col"]}_avg", '
-            f'STDDEV("{m["col"]}") AS "{m["col"]}_std"'
+            f'SUM("{m['col']}") AS {m['col']}_sum, '
+            f'COUNT("{m['col']}") AS {m['col']}_cnt, '
+            f'MIN("{m['col']}") AS {m['col']}_min, '
+            f'MAX("{m['col']}") AS {m['col']}_max, '
+            f'AVG("{m['col']}") AS {m['col']}_avg, '
+            f'STDDEV("{m['col']}") AS {m['col']}_std'
             for m in self.measures
         ])
         if group_cols:
@@ -315,55 +295,34 @@ class CubeEngine:
             FROM _src_parsed WHERE {period_expr} IS NOT NULL {group_by}
         """
         try:
-            print(f"[BUILD]     Executing SQL for {dim_combo}...", file=sys.stderr, flush=True)
             result_df = self.conn.execute(sql).df()
-            print(f"[BUILD]     SQL returned {len(result_df)} rows", file=sys.stderr, flush=True)
-        except Exception as e:
-            print(f"[BUILD]     SQL error for {dim_combo}: {str(e)}", file=sys.stderr, flush=True)
+        except Exception:
             return 0
         if result_df.empty:
-            print(f"[BUILD]     Empty result for {dim_combo}", file=sys.stderr, flush=True)
             return 0
-        # Build all rows to insert as a list, then bulk insert with temp table
-        rows_to_insert = []
+        rows = 0
         for _, row in result_df.iterrows():
             period_key = str(row["period_key"])
             dim_json = str(row["dim_json"])
             for m in self.measures:
                 col = m["col"]
-                rows_to_insert.append({
-                    'grain': grain,
-                    'period_key': period_key,
-                    'dim_combo': dim_combo,
-                    'dim_json': dim_json,
-                    'measure': col,
-                    'val_sum': float(row.get(f"{col}_sum", 0) or 0),
-                    'val_count': int(row.get(f"{col}_cnt", 0) or 0),
-                    'val_min': float(row.get(f"{col}_min", 0) or 0),
-                    'val_max': float(row.get(f"{col}_max", 0) or 0),
-                    'val_mean': float(row.get(f"{col}_avg", 0) or 0),
-                    'val_stddev': float(row.get(f"{col}_std", 0) or 0),
-                })
-        
-        # Use DuckDB temp table for ultra-fast bulk insert (100x faster!)
-        if rows_to_insert:
-            print(f"[BUILD]     Registering temp table with {len(rows_to_insert)} rows", file=sys.stderr, flush=True)
-            try:
-                batch_df = pd.DataFrame(rows_to_insert)
-                temp_table = f"_batch_{dim_combo.replace('|', '_')[:20]}"
-                self.conn.register(temp_table, batch_df)
-                print(f"[BUILD]     Inserting from temp table", file=sys.stderr, flush=True)
-                self.conn.execute(f"""
-                    INSERT INTO {CUBE_TABLE}
-                    SELECT grain, period_key, dim_combo, dim_json, measure,
-                           val_sum, val_count, val_min, val_max, val_mean, val_stddev
-                    FROM {temp_table}
-                """)
-                print(f"[BUILD]     Bulk insert complete for {dim_combo}: {len(rows_to_insert)} cells", file=sys.stderr, flush=True)
-            except Exception as e:
-                print(f"[BUILD]     Bulk insert error for {dim_combo}: {str(e)}", file=sys.stderr, flush=True)
-                pass
-        return len(rows_to_insert)
+                try:
+                    self.conn.execute(f"""
+                        INSERT OR REPLACE INTO {CUBE_TABLE}
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, [
+                        grain, period_key, dim_combo, dim_json, col,
+                        float(row.get(f"{col}_sum", 0) or 0),
+                        int(row.get(f"{col}_cnt", 0) or 0),
+                        float(row.get(f"{col}_min", 0) or 0),
+                        float(row.get(f"{col}_max", 0) or 0),
+                        float(row.get(f"{col}_avg", 0) or 0),
+                        float(row.get(f"{col}_std", 0) or 0),
+                    ])
+                    rows += 1
+                except Exception:
+                    pass
+        return rows
 
     def _compute_deltas(self):
         self.conn.execute("""
@@ -866,14 +825,10 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.post("/upload")
 async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...),
-                    session_id: Optional[str] = None,
-                    session_id_form: Optional[str] = Form(None, alias="session_id")):
-    import sys
-    sid = session_id or session_id_form or str(uuid.uuid4())[:12]
-    print(f"[UPLOAD] [{sid}] Starting upload, file={file.filename}", file=sys.stderr, flush=True)
+                    session_id: Optional[str] = None):
+    sid = session_id or str(uuid.uuid4())[:12]
     session = await get_or_create_session(sid)
     content = await file.read(); fname = file.filename or "data.csv"
-    print(f"[UPLOAD] [{sid}] File read, size={len(content)} bytes", file=sys.stderr, flush=True)
     try:
         if fname.endswith(".parquet"):
             df = pd.read_parquet(io.BytesIO(content))
@@ -891,10 +846,8 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
             if df is None: raise ValueError("Could not decode file")
         if df.empty: raise ValueError("File contains no data")
     except Exception as e:
-        print(f"[UPLOAD] [{sid}] File parse error: {str(e)}", file=sys.stderr, flush=True)
         raise HTTPException(status_code=400, detail=f"File read error: {str(e)}")
 
-    print(f"[UPLOAD] [{sid}] Parsed: {len(df)} rows, {len(df.columns)} cols", file=sys.stderr, flush=True)
     profiler = DataProfiler(df)
     schema_ctx = profiler.result()
     df_parsed = profiler.parsed_df()
@@ -902,40 +855,26 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
     session.df = df_parsed
     session.build_status = "building"
     session.build_error = None
-    print(f"[UPLOAD] [{sid}] Adding background task for cube build", file=sys.stderr, flush=True)
     background_tasks.add_task(_build_cube_bg, sid, df_parsed, schema_ctx)
-    print(f"[UPLOAD] [{sid}] Upload complete, returning response", file=sys.stderr, flush=True)
     return {"status": "building", "session_id": sid, "schema": schema_ctx,
             "file_name": fname, "rows": len(df), "cols": len(df.columns)}
 
 def _build_cube_bg(sid: str, df: pd.DataFrame, schema_ctx: dict):
-    import sys
-    import traceback
     try:
-        print(f"[BUILD] [{sid}] Starting cube build for {len(df)} rows, {len(df.columns)} cols", file=sys.stderr, flush=True)
         session = _SESSIONS.get(sid)
-        if not session: 
-            print(f"[BUILD] [{sid}] Session not found!", file=sys.stderr, flush=True)
-            return
-        print(f"[BUILD] [{sid}] CubeEngine initializing at {session.db_path}", file=sys.stderr, flush=True)
-        # Use a session-scoped DB file to avoid cross-session lock contention.
-        cube = CubeEngine(db_path=session.db_path)
-        print(f"[BUILD] [{sid}] CubeEngine initialized, calling build()", file=sys.stderr, flush=True)
+        if not session: return
+        db_path = os.environ.get("DUCKDB_PATH", session.db_path)
+        cube = CubeEngine(db_path=db_path)
         stats = cube.build(df, schema_ctx)
-        print(f"[BUILD] [{sid}] Cube build completed: {stats}", file=sys.stderr, flush=True)
         session.conn = cube.conn
         session.cube_ready = True
         session.build_status = "ready"
         session.build_stats = stats
-        print(f"[BUILD] [{sid}] Session state updated to ready", file=sys.stderr, flush=True)
     except Exception as e:
-        print(f"[BUILD] [{sid}] Cube build failed: {str(e)}", file=sys.stderr, flush=True)
-        print(f"[BUILD] [{sid}] Traceback:\n{traceback.format_exc()}", file=sys.stderr, flush=True)
         session = _SESSIONS.get(sid)
         if session:
             session.build_status = "error"
-            session.build_error = f"{str(e)}\n{traceback.format_exc()}"
-            print(f"[BUILD] [{sid}] Error saved to session", file=sys.stderr, flush=True)
+            session.build_error = str(e)
 
 @app.get("/schema")
 async def get_schema(session_id: str = "default"):
@@ -944,7 +883,6 @@ async def get_schema(session_id: str = "default"):
         raise HTTPException(status_code=404, detail="No data loaded for this session")
     return {"session_id": session_id, "build_status": session.build_status,
             "schema": session.schema_ctx,
-            "build_error": session.build_error,
             "cube_stats": session.conn.execute("SELECT COUNT(*) FROM axl_cube").fetchone()[0] if session.conn else None}
 
 @app.get("/health")
@@ -1171,12 +1109,12 @@ async def get_conversation(session_id: str, limit: int = 20):
         for r in reversed(rows)
     ]}
 
-# ── Frontend Static Serving (single-service deployment) ─────────────────────
-
-_FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "public"))
-if os.path.exists(os.path.join(_FRONTEND_DIR, "index.html")):
-    # Mount at the end so API routes above keep priority.
-    app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
+# ── Static Frontend (single-service deploy) ───────────────────────────────────
+# Serves frontend/public/index.html so one Render web service hosts both the
+# API and the SPA. Mounted last so it never shadows the API routes above.
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "public"
+if _FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 

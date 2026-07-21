@@ -2,8 +2,9 @@ services:
   - type: web
     name: axilattice-v2
     env: python
+    plan: free
     buildCommand: pip install -r backend/requirements.txt
-    startCommand: uvicorn main:app --app-dir backend --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --app-dir backend
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false
@@ -11,7 +12,9 @@ services:
         value: /opt/render/project/data/axilattice.duckdb
       - key: AXL_SQLITE_PATH
         value: /opt/render/project/data/axl_meta.db
+      - key: PYTHON_VERSION
+        value: 3.12.7
     disk:
-      name: axilattice-data
+      name: cube-data
       mountPath: /opt/render/project/data
-      sizeGB: 5
+      sizeGB: 1
